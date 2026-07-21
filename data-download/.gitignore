@@ -1,0 +1,6 @@
+#local secrets
+.env
+
+#partial downloads
+*.part
+__pycache__/

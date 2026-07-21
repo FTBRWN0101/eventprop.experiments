@@ -1,0 +1,17 @@
+#python
+__pycache__/
+*.pyc
+.venv/
+
+#credentials
+data-download/.env
+
+#fetched data, rebuild with fetch_all.py then build_vrp.py
+data-save/
+
+#snn training artifacts
+experiments/.snn_checkpoints/
+*_CODE/
+
+#macos
+.DS_Store
