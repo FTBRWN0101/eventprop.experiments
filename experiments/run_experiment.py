@@ -74,6 +74,9 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
                         choices=["options+price", "price-only"])
     parser.add_argument("--test-sampling", default="nonoverlap",
                         choices=["nonoverlap", "daily"])
+    parser.add_argument("--encoding", default="rate",
+                        choices=["rate", "latency", "population", "delta"],
+                        help="Spike encoding for the SNN (ignored by other models).")
     parser.add_argument("--models", default="har_rv,garch",
                         help="Comma-separated model names to run.")
     return parser.parse_args(argv)
@@ -84,7 +87,8 @@ def main(argv: list[str] | None = None) -> None:
     args = _parse_args(argv)
     config = ExperimentConfig.load(
         horizon=args.horizon, target=args.target, iv_leg=args.iv_leg,
-        feature_set=args.feature_set, test_sampling=args.test_sampling)
+        feature_set=args.feature_set, test_sampling=args.test_sampling,
+        encoding=args.encoding)
     results = run(config, [m.strip() for m in args.models.split(",") if m.strip()])
     _print_table(config, results)
 

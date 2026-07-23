@@ -13,5 +13,8 @@ data-save/
 experiments/.snn_checkpoints/
 *_CODE/
 
+#local GeNN builds, see experiments/SNN_ENV_SETUP.md
+.build-deps/
+
 #macos
 .DS_Store
