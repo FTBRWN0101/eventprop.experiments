@@ -18,3 +18,6 @@ experiments/.snn_checkpoints/
 
 #macos
 .DS_Store
+
+#visual studio
+.vs/

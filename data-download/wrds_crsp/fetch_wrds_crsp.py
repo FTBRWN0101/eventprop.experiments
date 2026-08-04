@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import importlib.util
 import logging
+import os
 import sys
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -70,7 +71,7 @@ class WrdsSource(CredentialedSource):
                             bytes=dest.stat().st_size)]
 
     def _connect(self):
-        """Open a WRDS connection, writing the pgpass entry so headless runs never prompt."""
+        """Open a WRDS connection for headless auth."""
         try:
             import wrds
         except ModuleNotFoundError as exc:  #optional heavy dependency
@@ -78,23 +79,36 @@ class WrdsSource(CredentialedSource):
                 "the 'wrds' package is not installed, run 'pip install wrds'"
             ) from exc
         self._ensure_pgpass()
-        return wrds.Connection(wrds_username=self.config.secret("WRDS_USERNAME"))
+        return wrds.Connection(
+            wrds_username=self.config.secret("WRDS_USERNAME"),
+            wrds_password=self.config.secret("WRDS_PASSWORD"),
+        )
+
+    @staticmethod
+    def _pgpass_path() -> Path:
+        """Location libpq actually reads: ``~/.pgpass`` on Unix, a different path on Windows."""
+        if sys.platform == "win32":
+            appdata = Path(os.environ.get("APPDATA", Path.home() / "AppData" / "Roaming"))
+            return appdata / "postgresql" / "pgpass.conf"
+        return Path.home() / ".pgpass"
 
     def _ensure_pgpass(self) -> None:
-        """Write/refresh this user's WRDS line in ``~/.pgpass`` (mode 600), idempotently."""
+        """Write/refresh this user's WRDS line in the platform's pgpass file, idempotently."""
         username = self.config.secret("WRDS_USERNAME")
         password = self.config.secret("WRDS_PASSWORD")
         if not (username and password):
             return  #fall back to an existing pgpass or a prompt
 
-        pgpass = Path.home() / ".pgpass"
+        pgpass = self._pgpass_path()
+        pgpass.parent.mkdir(parents=True, exist_ok=True)
         prefix = f"{self.PG_HOST}:{self.PG_PORT}:{self.PG_DATABASE}:{username}:"
         entry = f"{prefix}{password}"
 
         existing = pgpass.read_text().splitlines() if pgpass.exists() else []
         kept = [line for line in existing if line and not line.startswith(prefix)]
         pgpass.write_text("\n".join([*kept, entry]) + "\n")
-        pgpass.chmod(0o600)
+        if sys.platform != "win32":
+            pgpass.chmod(0o600)
 
     def _query(self, connection) -> "pd.DataFrame":
         columns = ", ".join(self.COLUMNS)

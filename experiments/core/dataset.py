@@ -112,9 +112,12 @@ class VrpDataset:
         dates = frame.index
         window = cfg.horizon_days
 
-        ends = range(window - 1, len(frame))
         if name == "test" and cfg.test_sampling == "nonoverlap":
-            ends = range(window - 1, len(frame), window)
+            #match split()'s dates: it strides after dropping NaN rows
+            wanted = set(self.split(name).target.index)
+            ends = [i for i in range(window - 1, len(frame)) if dates[i] in wanted]
+        else:
+            ends = range(window - 1, len(frame))
 
         x_rows, y_rows, end_dates = [], [], []
         for end in ends:
