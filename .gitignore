@@ -21,3 +21,6 @@ experiments/.snn_checkpoints/
 
 #visual studio
 .vs/
+
+#working notes, kept local
+docs/
