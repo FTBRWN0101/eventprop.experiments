@@ -12,10 +12,13 @@ _ROOT = Path(__file__).resolve().parent
 if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 
-from core import metrics  # noqa: E402
-from core.config import ExperimentConfig  # noqa: E402
-from core.dataset import VrpDataset  # noqa: E402
-from models.base import MODELS  # noqa: E402
+import pandas as pd  #noqa: E402
+
+from core import metrics  #noqa: E402
+from core.config import ExperimentConfig  #noqa: E402
+from core.dataset import VrpDataset  #noqa: E402
+from core.results import save_run  #noqa: E402
+from models.base import MODELS  #noqa: E402
 
 logger = logging.getLogger("experiments")
 
@@ -23,20 +26,31 @@ logger = logging.getLogger("experiments")
 BENCHMARK = "har_rv"
 
 
-def run(config: ExperimentConfig, model_names: list[str]) -> dict[str, dict[str, float]]:
-    """Fit and evaluate each model; return ``{model: metrics}``."""
+def run(config: ExperimentConfig, model_names: list[str]) -> tuple[
+        dict[str, dict[str, float]], dict[str, pd.Series], dict[str, dict]]:
+    """Fit and evaluate each model; return ``(metrics, predictions, diagnostics)``."""
     MODELS.discover(_ROOT / "models", "models")
     data = VrpDataset(config)
 
     results: dict[str, dict[str, float]] = {}
     errors: dict[str, object] = {}
+    predictions: dict[str, pd.Series] = {}
+    diagnostics: dict[str, dict] = {}
     for name in model_names:
         model = MODELS.get(name)(config)
         model.fit(data)
         pred = model.predict(data, "test")
+        predictions[name] = pred
         split = data.split("test")
         results[name] = metrics.evaluate(split, pred)
         errors[name] = metrics.squared_errors(split, pred)
+        diag = {}
+        if hasattr(model, "fitted_range"):
+            diag["fitted_range"] = model.fitted_range
+        if hasattr(model, "silent_neuron_fraction"):
+            diag["silent_neuron_fraction"] = model.silent_neuron_fraction
+        if diag:
+            diagnostics[name] = diag
 
     #Diebold-Mariano vs the benchmark (positive => benchmark worse)
     lag = max(config.horizon_days - 1, 0)
@@ -48,7 +62,7 @@ def run(config: ExperimentConfig, model_names: list[str]) -> dict[str, dict[str,
             stat, p = metrics.diebold_mariano(errors[BENCHMARK], errors[name], lag=lag)
             results[name]["dm_vs_har"] = stat
             results[name]["dm_p"] = p
-    return results
+    return results, predictions, diagnostics
 
 
 def _print_table(config: ExperimentConfig, results: dict[str, dict[str, float]]) -> None:
@@ -79,6 +93,18 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
                         help="Spike encoding for the SNN (ignored by other models).")
     parser.add_argument("--models", default="har_rv,garch",
                         help="Comma-separated model names to run.")
+    parser.add_argument("--seed", type=int, default=0,
+                        help="Seed for GPU RNG (weights, Poisson) and tau sampling.")
+    parser.add_argument("--input-window", type=int, default=None,
+                        help="Input sequence length T in trading days "
+                             "(default: same as the forecast horizon).")
+    parser.add_argument("--sample-start", default=None,
+                        help="Uniform sample start date (ISO) for every split/model.")
+    parser.add_argument("--num-epochs", type=int, default=50)
+    parser.add_argument("--learning-rate", type=float, default=0.001)
+    parser.add_argument("--delta-multiplier", type=float, default=1.0)
+    parser.add_argument("--holdout-val", action="store_true",
+                        help="Hold out 2017-2019 from train as a validation split.")
     return parser.parse_args(argv)
 
 
@@ -88,9 +114,15 @@ def main(argv: list[str] | None = None) -> None:
     config = ExperimentConfig.load(
         horizon=args.horizon, target=args.target, iv_leg=args.iv_leg,
         feature_set=args.feature_set, test_sampling=args.test_sampling,
-        encoding=args.encoding)
-    results = run(config, [m.strip() for m in args.models.split(",") if m.strip()])
+        encoding=args.encoding, seed=args.seed, input_window=args.input_window,
+        sample_start=args.sample_start, num_epochs=args.num_epochs,
+        learning_rate=args.learning_rate, delta_multiplier=args.delta_multiplier,
+        holdout_val=args.holdout_val)
+    results, predictions, diagnostics = run(
+        config, [m.strip() for m in args.models.split(",") if m.strip()])
     _print_table(config, results)
+    run_dir = save_run(config, results, predictions, diagnostics)
+    logger.info("\nresults written to %s", run_dir)
 
 
 if __name__ == "__main__":

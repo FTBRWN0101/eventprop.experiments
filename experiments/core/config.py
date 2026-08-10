@@ -28,17 +28,33 @@ class ExperimentConfig:
     encoding: str = "rate"            #used by the SNN only
     test_sampling: str = "nonoverlap"  #nonoverlap | daily
     seed: int = 0
+    input_window: int | None = None   #sequence length T; None ties it to the horizon
+    num_epochs: int = 50
+    learning_rate: float = 0.001
+    sample_start: str | None = None   #ISO start date, same for every split and model
+    delta_multiplier: float = 1.0     #delta encoder threshold multiplier
+    holdout_val: bool = False         #carve 2017-2019 out of train as a validation set
 
     annualisation: int = 252
     rvrp_smooth_window: int = 5
 
+    def __post_init__(self) -> None:
+        if self.horizon == "monthly" and self.iv_leg == "vix9d":
+            raise ValueError("the monthly panel has no VIX9D leg, "
+                             "use --iv-leg vix with --horizon monthly")
+
     @classmethod
     def load(cls, **overrides: object) -> "ExperimentConfig":
-        return cls(**overrides)  # type: ignore[arg-type]
+        return cls(**overrides)  #type: ignore[arg-type]
 
     @property
     def horizon_days(self) -> int:
         return HORIZON_DAYS[self.horizon]
+
+    @property
+    def sequence_length(self) -> int:
+        """Input window length T, independent of the forecast horizon."""
+        return self.input_window if self.input_window is not None else self.horizon_days
 
     @property
     def target_column(self) -> str:

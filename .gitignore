@@ -24,3 +24,6 @@ experiments/.snn_checkpoints/
 
 #working notes, kept local
 docs/
+
+#run artifacts
+experiments/results/

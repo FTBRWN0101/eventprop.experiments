@@ -17,33 +17,32 @@ from models.base import Forecaster
 
 NUM_HIDDEN = 256
 BATCH_SIZE = 32
-NUM_EPOCHS = 50
-DT = 1.0        #1 timestep = 1 trading day
-TAU_MEM = 3.0   #proposal default: 3 timesteps
-TAU_SYN = 1.0   #proposal default: 1 timestep
+DT = 1.0
+TAU_MEM = 3.0   #heterogeneous sampling scales from this
+TAU_SYN = 1.0   #homogeneous: _get_tau_syn wants one scalar
 CHECKPOINT_ROOT = Path(__file__).resolve().parents[1] / ".snn_checkpoints"
 _ENCODERS_DIR = Path(__file__).resolve().parents[1] / "encoders"
 
-#check spike counts between chunks
-CHECKPOINT_EPOCHS = 10
-SILENT_NEURON_WARN_THRESHOLD = 0.10
+CHECKPOINT_EPOCHS = 10                #spike counts are checked between chunks
+SILENT_NEURON_WARN_THRESHOLD = 0.10   #raster review trigger
 
-#placeholder, not tuned
-REG_LAMBDA = 1e-4
-REG_TARGET_DUTY_CYCLE = 0.3
+#from the mlGeNN eventprop example
+V_THRESH = 0.61
+W_IN_SCALE = 2.5
+W_REC_SCALE = 1.5
+W_OUT_SCALE = 2.0
+TAU_MEM_OUT = 20.0   #long output integrator
+REG_LAMBDA = 1e-8
+REG_TARGET_DUTY_CYCLE = 0.3   #scales reg_nu_upper to the trial length
 
-#tau_mem varies per neuron, tau_syn does not (mlGeNN wants a scalar)
-TAU_HET_SEED = 0
-
-#added to a silent neuron's input weights every epoch it stays silent
 SILENT_NEURON_DELTA_G = 0.002
 
 logger = logging.getLogger(__name__)
 
 
-def _sample_heterogeneous_tau_mem(num_neurons: int) -> np.ndarray:
+def _sample_heterogeneous_tau_mem(num_neurons: int, seed: int) -> np.ndarray:
     """Per-neuron tau_mem from a gamma, clipped to [TAU_MEM, 3*TAU_MEM]."""
-    rng = np.random.default_rng(TAU_HET_SEED)
+    rng = np.random.default_rng(seed)
     return np.clip(rng.gamma(3.0, TAU_MEM / 3.0, num_neurons), TAU_MEM, 3.0 * TAU_MEM)
 
 
@@ -134,7 +133,10 @@ class SnnForecaster(Forecaster):
 
     def _get_encoder(self) -> Encoder:
         ENCODERS.discover(_ENCODERS_DIR, "encoders")
-        return ENCODERS.get(self.config.encoding)()
+        cls = ENCODERS.get(self.config.encoding)
+        if self.config.encoding == "delta":
+            return cls(multiplier=self.config.delta_multiplier)
+        return cls()
 
     def _build_network(self, encoded: EncodedInput, timesteps: int, max_spikes: int | None):
         from ml_genn import Connection, Network, Population
@@ -155,21 +157,22 @@ class SnnForecaster(Forecaster):
                 input_neuron = SpikeInput(max_spikes=max_spikes)
             input_pop = Population(input_neuron, num_neurons)
             hidden = Population(
-                LeakyIntegrateFire(v_thresh=1.0,
-                                   tau_mem=_sample_heterogeneous_tau_mem(NUM_HIDDEN),
+                LeakyIntegrateFire(v_thresh=V_THRESH,
+                                   tau_mem=_sample_heterogeneous_tau_mem(
+                                       NUM_HIDDEN, self.config.seed),
                                    tau_refrac=None),
                 NUM_HIDDEN, record_spikes=True)
             output = Population(
-                LeakyIntegrate(tau_mem=TAU_MEM, readout="var"), 1)
+                LeakyIntegrate(tau_mem=TAU_MEM_OUT, readout="var"), 1)
 
             Connection(input_pop, hidden,
-                      Dense(Normal(mean=0.0, sd=1.0 / np.sqrt(num_neurons))),
+                      Dense(Normal(mean=0.0, sd=W_IN_SCALE / np.sqrt(num_neurons))),
                       Exponential(TAU_SYN))
             Connection(hidden, hidden,
-                      Dense(Normal(mean=0.0, sd=0.5 / np.sqrt(NUM_HIDDEN))),
+                      Dense(Normal(mean=0.0, sd=W_REC_SCALE / np.sqrt(NUM_HIDDEN))),
                       Exponential(TAU_SYN))
             Connection(hidden, output,
-                      Dense(Normal(mean=0.0, sd=1.0 / np.sqrt(NUM_HIDDEN))),
+                      Dense(Normal(mean=0.0, sd=W_OUT_SCALE / np.sqrt(NUM_HIDDEN))),
                       Exponential(TAU_SYN))
         return network, input_pop, hidden, output
 
@@ -179,10 +182,11 @@ class SnnForecaster(Forecaster):
         from ml_genn.utils.data import calc_max_spikes
         return BATCH_SIZE * calc_max_spikes(encoded.data)
 
-    def _checkpoint_dir(self) -> Path:
+    def _checkpoint_dir(self, create: bool = False) -> Path:
         cfg = self.config
         path = CHECKPOINT_ROOT / f"{cfg.horizon}_{cfg.target}_{cfg.iv_leg}_{cfg.encoding}"
-        path.mkdir(parents=True, exist_ok=True)
+        if create:
+            path.mkdir(parents=True, exist_ok=True)
         return path
 
     def fit(self, data: VrpDataset) -> None:
@@ -193,10 +197,13 @@ class SnnForecaster(Forecaster):
 
         SilentNeuronRecovery = _make_silent_neuron_recovery_cls()
 
-        X, y, _ = data.sequences("train")
+        X, y, train_dates = data.sequences("train")
         #mlGeNN wants full batches; drop the trailing partial one
         n_complete = (X.shape[0] // BATCH_SIZE) * BATCH_SIZE
         X, y = X[:n_complete], y[:n_complete]
+        self.fitted_range = (str(train_dates[0].date()),
+                             str(train_dates[n_complete - 1].date()))
+        num_epochs = self.config.num_epochs
         self._timesteps = X.shape[1]
         self._y_mean, self._y_std = float(y.mean()), float(y.std() or 1.0)
         y_norm = (y - self._y_mean) / self._y_std
@@ -211,21 +218,22 @@ class SnnForecaster(Forecaster):
 
         network, input_pop, hidden_pop, output_pop = self._build_network(
             encoded, self._timesteps, max_spikes)
-        #penalises hidden neurons that fire too much or too little
         reg_nu_upper = max(1.0, REG_TARGET_DUTY_CYCLE * self._timesteps)
         compiler = EventPropCompiler(example_timesteps=self._timesteps,
-                                     losses="mean_square_error", optimiser=Adam(0.001),
+                                     losses="mean_square_error",
+                                     optimiser=Adam(self.config.learning_rate),
                                      batch_size=BATCH_SIZE, dt=DT, per_timestep_loss=True,
                                      reg_lambda_upper={hidden_pop: REG_LAMBDA},
                                      reg_lambda_lower={hidden_pop: REG_LAMBDA},
-                                     reg_nu_upper=reg_nu_upper)
+                                     reg_nu_upper=reg_nu_upper,
+                                     rng_seed=self.config.seed)
         compiled_net = compiler.compile(network)
         compiled_net.num_recording_timesteps = self._timesteps
         self.silent_neuron_fraction: list[float] = []
         with compiled_net:
             epochs_done = 0
-            while epochs_done < NUM_EPOCHS:
-                chunk = min(CHECKPOINT_EPOCHS, NUM_EPOCHS - epochs_done)
+            while epochs_done < num_epochs:
+                chunk = min(CHECKPOINT_EPOCHS, num_epochs - epochs_done)
                 recorder = SpikeRecorder(hidden_pop, key="hidden_spikes",
                                          record_counts=True)
                 #callbacks get copied, so read the data from train()'s return
@@ -240,23 +248,38 @@ class SnnForecaster(Forecaster):
                 silent_frac = _silent_neuron_fraction(spike_counts)
                 self.silent_neuron_fraction.append(silent_frac)
                 logger.info("[snn] epoch %d/%d: %.1f%% of hidden neurons silent",
-                           epochs_done, NUM_EPOCHS, silent_frac * 100)
+                           epochs_done, num_epochs, silent_frac * 100)
                 if silent_frac > SILENT_NEURON_WARN_THRESHOLD:
                     logger.warning(
                         "[snn] spike deletion: %.1f%% of hidden neurons silent at "
                         "epoch %d/%d (>%.0f%% threshold), consider reviewing loss "
                         "shaping / silent-neuron recovery",
-                        silent_frac * 100, epochs_done, NUM_EPOCHS,
+                        silent_frac * 100, epochs_done, num_epochs,
                         SILENT_NEURON_WARN_THRESHOLD * 100)
 
-            compiled_net.save_connectivity((NUM_EPOCHS - 1,), Numpy(self._checkpoint_dir()))
+            compiled_net.save_connectivity(
+                (num_epochs - 1,), Numpy(self._checkpoint_dir(create=True)))
+
+        saved = list(self._checkpoint_dir().glob("*.npy"))
+        if not saved:
+            raise RuntimeError(
+                f"save_connectivity wrote no files to {self._checkpoint_dir()}, "
+                f"training did not persist, refusing to report success")
+        logger.info("[snn] saved %d weight arrays to %s",
+                    len(saved), self._checkpoint_dir())
 
     def predict(self, data: VrpDataset, split: str) -> pd.Series:
         from ml_genn.compilers import InferenceCompiler
         from ml_genn.serialisers import Numpy
 
+        #deserialise_all returns {} on a glob miss, leaving random weights
+        checkpoint_dir = self._checkpoint_dir()
+        if not any(checkpoint_dir.glob("*.npy")):
+            raise FileNotFoundError(
+                f"no checkpoint in {checkpoint_dir}, run fit() first")
+
         X, _, dates = data.sequences(split)
-        #mlGeNN wants full batches; pad with repeats, trimmed off below
+        #mlGeNN wants full batches; pad with repeats, trimmed below
         n = X.shape[0]
         pad = (-n) % BATCH_SIZE
         if pad:
@@ -267,7 +290,7 @@ class SnnForecaster(Forecaster):
 
         network, input_pop, _, output_pop = self._build_network(
             encoded, self._timesteps, max_spikes)
-        network.load((NUM_EPOCHS - 1,), Numpy(self._checkpoint_dir()))
+        network.load((self.config.num_epochs - 1,), Numpy(checkpoint_dir))
 
         compiler = InferenceCompiler(evaluate_timesteps=self._timesteps,
                                      batch_size=BATCH_SIZE, dt=DT)

@@ -47,16 +47,27 @@ class Split:
 class VrpDataset:
     """Reads processed panels and serves daily frames, splits, and windowed tensors."""
 
+    VAL_START = "2017-01-01"
+
     def __init__(self, config: ExperimentConfig) -> None:
         self.config = config
         self._cache: dict[str, pd.DataFrame] = {}
         self._scaler: tuple[np.ndarray, np.ndarray] | None = None
 
     def daily(self, split: str) -> pd.DataFrame:
-        """The full daily frame for *split* (``train``/``test``/``full``), date-indexed."""
+        """The daily frame for *split* (``train``/``val``/``test``/``full``), date-indexed."""
         if split not in self._cache:
-            frame = pd.read_csv(self.config.processed_path(split), parse_dates=["date"])
-            self._cache[split] = frame.set_index("date").sort_index()
+            cfg = self.config
+            source = "train" if split == "val" else split
+            frame = pd.read_csv(cfg.processed_path(source), parse_dates=["date"])
+            frame = frame.set_index("date").sort_index()
+            if split == "val":
+                frame = frame.loc[frame.index >= self.VAL_START]
+            elif split == "train" and cfg.holdout_val:
+                frame = frame.loc[frame.index < self.VAL_START]
+            if cfg.sample_start is not None:
+                frame = frame.loc[frame.index >= cfg.sample_start]
+            self._cache[split] = frame
         return self._cache[split]
 
     def full(self) -> pd.DataFrame:
@@ -101,26 +112,25 @@ class VrpDataset:
         return self._scaler
 
     def sequences(self, name: str) -> tuple[np.ndarray, np.ndarray, pd.DatetimeIndex]:
-        """Return ``(X[N, T, F], y[N], dates)`` of length-``horizon_days`` windows."""
+        """Return ``(X[N, T, F], y[N], dates)`` of length-``sequence_length`` windows."""
         cfg = self.config
-        frame = self.daily(name)
+        frame = self.daily("full")
         columns = self.feature_columns(frame)
         mean, std = self._fit_scaler(columns)
 
         feats = (frame[columns].to_numpy() - mean) / std
         target = frame[cfg.target_column].to_numpy()
         dates = frame.index
-        window = cfg.horizon_days
+        window = cfg.sequence_length
 
-        if name == "test" and cfg.test_sampling == "nonoverlap":
-            #match split()'s dates: it strides after dropping NaN rows
-            wanted = set(self.split(name).target.index)
-            ends = [i for i in range(window - 1, len(frame)) if dates[i] in wanted]
-        else:
-            ends = range(window - 1, len(frame))
+        wanted = set(self.split(name).target.index)
+        positions = {d: i for i, d in enumerate(dates)}
+        ends = sorted(positions[d] for d in wanted if d in positions)
 
         x_rows, y_rows, end_dates = [], [], []
         for end in ends:
+            if end - window + 1 < 0:
+                continue
             y = target[end]
             if np.isnan(y) or np.isnan(feats[end - window + 1:end + 1]).any():
                 continue

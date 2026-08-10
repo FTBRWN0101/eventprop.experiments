@@ -24,6 +24,9 @@ class GarchForecaster(Forecaster):
         #last_obs fits on train only, still filters test returns
         returns = (data.full()["spx_logret"] * 100.0).dropna()
         self._first_test = data.daily("test").index.min()
+        fit_returns = returns.loc[returns.index < self._first_test]
+        self.fitted_range = (str(fit_returns.index.min().date()),
+                             str(fit_returns.index.max().date()))
         model = arch_model(returns, mean="Constant", vol="GARCH", p=1, q=1, dist="normal")
         self._result = model.fit(last_obs=self._first_test, disp="off")
 

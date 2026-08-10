@@ -19,6 +19,8 @@ class HarRvForecaster(Forecaster):
 
     def fit(self, data: VrpDataset) -> None:
         train = data.daily("train")[[*self.COMPONENTS, "rv_fwd"]].dropna()
+        self.fitted_range = (str(train.index.min().date()),
+                             str(train.index.max().date()))
         design = self._design(train[list(self.COMPONENTS)].to_numpy())
         self._coef, *_ = np.linalg.lstsq(design, train["rv_fwd"].to_numpy(), rcond=None)
 
