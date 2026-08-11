@@ -70,6 +70,14 @@ class WrdsSource(CredentialedSource):
         return [FetchResult(self.name, dataset.key, dest, rows=len(frame),
                             bytes=dest.stat().st_size)]
 
+    def _credentials(self) -> tuple[str, str]:
+        """WRDS username and password, username lower-cased.
+
+        PAM is case-sensitive, so a mixed-case username is rejected.
+        """
+        return ((self.config.secret("WRDS_USERNAME") or "").lower(),
+                self.config.secret("WRDS_PASSWORD") or "")
+
     def _connect(self):
         """Open a WRDS connection for headless auth."""
         try:
@@ -78,11 +86,9 @@ class WrdsSource(CredentialedSource):
             raise RuntimeError(
                 "the 'wrds' package is not installed, run 'pip install wrds'"
             ) from exc
+        username, password = self._credentials()
         self._ensure_pgpass()
-        return wrds.Connection(
-            wrds_username=self.config.secret("WRDS_USERNAME"),
-            wrds_password=self.config.secret("WRDS_PASSWORD"),
-        )
+        return wrds.Connection(wrds_username=username, wrds_password=password)
 
     @staticmethod
     def _pgpass_path() -> Path:
@@ -94,8 +100,7 @@ class WrdsSource(CredentialedSource):
 
     def _ensure_pgpass(self) -> None:
         """Write/refresh this user's WRDS line in the platform's pgpass file, idempotently."""
-        username = self.config.secret("WRDS_USERNAME")
-        password = self.config.secret("WRDS_PASSWORD")
+        username, password = self._credentials()
         if not (username and password):
             return  #fall back to an existing pgpass or a prompt
 
