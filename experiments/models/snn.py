@@ -206,6 +206,9 @@ class SnnForecaster(Forecaster):
 
         SilentNeuronRecovery = _make_silent_neuron_recovery_cls()
 
+        #mlGeNN shuffles with numpy's global RNG, so seed that too
+        np.random.seed(self.config.seed)
+
         X, y, train_dates = data.sequences("train")
         #mlGeNN wants full batches; drop the trailing partial one
         n_complete = (X.shape[0] // BATCH_SIZE) * BATCH_SIZE
