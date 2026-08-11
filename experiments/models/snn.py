@@ -155,15 +155,16 @@ class SnnForecaster(Forecaster):
                                             input_frame_timesteps=1)
             else:
                 input_neuron = SpikeInput(max_spikes=max_spikes)
-            input_pop = Population(input_neuron, num_neurons)
+            #name them, or a second network gets different checkpoint names
+            input_pop = Population(input_neuron, num_neurons, name="input")
             hidden = Population(
                 LeakyIntegrateFire(v_thresh=V_THRESH,
                                    tau_mem=_sample_heterogeneous_tau_mem(
                                        NUM_HIDDEN, self.config.seed),
                                    tau_refrac=None),
-                NUM_HIDDEN, record_spikes=True)
+                NUM_HIDDEN, record_spikes=True, name="hidden")
             output = Population(
-                LeakyIntegrate(tau_mem=TAU_MEM_OUT, readout="var"), 1)
+                LeakyIntegrate(tau_mem=TAU_MEM_OUT, readout="var"), 1, name="output")
 
             Connection(input_pop, hidden,
                       Dense(Normal(mean=0.0, sd=W_IN_SCALE / np.sqrt(num_neurons))),
@@ -188,6 +189,14 @@ class SnnForecaster(Forecaster):
         if create:
             path.mkdir(parents=True, exist_ok=True)
         return path
+
+    def _expected_checkpoints(self) -> list[Path]:
+        """Weight files save() writes, named ``<epoch>-Conn_<src>_<dst>-g.npy``."""
+        epoch = self.config.num_epochs - 1
+        directory = self._checkpoint_dir()
+        return [directory / f"{epoch}-Conn_{src}_{dst}-g.npy"
+                for src, dst in (("input", "hidden"), ("hidden", "hidden"),
+                                 ("hidden", "output"))]
 
     def fit(self, data: VrpDataset) -> None:
         from ml_genn.callbacks import BatchProgressBar, SpikeRecorder
@@ -257,26 +266,29 @@ class SnnForecaster(Forecaster):
                         silent_frac * 100, epochs_done, num_epochs,
                         SILENT_NEURON_WARN_THRESHOLD * 100)
 
-            compiled_net.save_connectivity(
-                (num_epochs - 1,), Numpy(self._checkpoint_dir(create=True)))
+            #save(), not save_connectivity(): that one does nothing for Dense
+            compiled_net.save((num_epochs - 1,),
+                              Numpy(self._checkpoint_dir(create=True)))
 
-        saved = list(self._checkpoint_dir().glob("*.npy"))
-        if not saved:
+        missing = [f.name for f in self._expected_checkpoints()
+                   if not f.exists()]
+        if missing:
             raise RuntimeError(
-                f"save_connectivity wrote no files to {self._checkpoint_dir()}, "
-                f"training did not persist, refusing to report success")
+                f"training did not persist: {missing} absent from "
+                f"{self._checkpoint_dir()}, refusing to report success")
         logger.info("[snn] saved %d weight arrays to %s",
-                    len(saved), self._checkpoint_dir())
+                    len(self._expected_checkpoints()), self._checkpoint_dir())
 
     def predict(self, data: VrpDataset, split: str) -> pd.Series:
         from ml_genn.compilers import InferenceCompiler
         from ml_genn.serialisers import Numpy
 
-        #deserialise_all returns {} on a glob miss, leaving random weights
+        #deserialise_all returns {} on a glob miss, so check exact filenames
         checkpoint_dir = self._checkpoint_dir()
-        if not any(checkpoint_dir.glob("*.npy")):
+        missing = [f.name for f in self._expected_checkpoints() if not f.exists()]
+        if missing:
             raise FileNotFoundError(
-                f"no checkpoint in {checkpoint_dir}, run fit() first")
+                f"{missing} absent from {checkpoint_dir}, run fit() first")
 
         X, _, dates = data.sequences(split)
         #mlGeNN wants full batches; pad with repeats, trimmed below
