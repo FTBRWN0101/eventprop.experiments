@@ -27,8 +27,8 @@ BENCHMARK = "har_rv"
 
 
 def run(config: ExperimentConfig, model_names: list[str]) -> tuple[
-        dict[str, dict[str, float]], dict[str, pd.Series], dict[str, dict]]:
-    """Fit and evaluate each model; return ``(metrics, predictions, diagnostics)``."""
+        dict[str, dict[str, float]], dict[str, pd.Series], dict[str, dict], pd.Series]:
+    """Fit and evaluate each model; return ``(metrics, predictions, diagnostics, actual)``."""
     MODELS.discover(_ROOT / "models", "models")
     data = VrpDataset(config)
 
@@ -62,7 +62,7 @@ def run(config: ExperimentConfig, model_names: list[str]) -> tuple[
             stat, p = metrics.diebold_mariano(errors[BENCHMARK], errors[name], lag=lag)
             results[name]["dm_vs_har"] = stat
             results[name]["dm_p"] = p
-    return results, predictions, diagnostics
+    return results, predictions, diagnostics, data.split("test").target
 
 
 def _print_table(config: ExperimentConfig, results: dict[str, dict[str, float]]) -> None:
@@ -93,8 +93,8 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
                         help="Spike encoding for the SNN (ignored by other models).")
     parser.add_argument("--models", default="har_rv,garch",
                         help="Comma-separated model names to run.")
-    parser.add_argument("--seed", type=int, default=0,
-                        help="Seed for GPU RNG (weights, Poisson) and tau sampling.")
+    parser.add_argument("--seed", type=int, default=1,
+                        help="Seed for the GPU RNG and tau sampling. 0 is rejected.")
     parser.add_argument("--input-window", type=int, default=None,
                         help="Input sequence length T in trading days "
                              "(default: same as the forecast horizon).")
@@ -118,10 +118,10 @@ def main(argv: list[str] | None = None) -> None:
         sample_start=args.sample_start, num_epochs=args.num_epochs,
         learning_rate=args.learning_rate, delta_multiplier=args.delta_multiplier,
         holdout_val=args.holdout_val)
-    results, predictions, diagnostics = run(
+    results, predictions, diagnostics, actual = run(
         config, [m.strip() for m in args.models.split(",") if m.strip()])
     _print_table(config, results)
-    run_dir = save_run(config, results, predictions, diagnostics)
+    run_dir = save_run(config, results, predictions, diagnostics, actual)
     logger.info("\nresults written to %s", run_dir)
 
 

@@ -307,8 +307,10 @@ class SnnForecaster(Forecaster):
             encoded, self._timesteps, max_spikes)
         network.load((self.config.num_epochs - 1,), Numpy(checkpoint_dir))
 
+        #without a seed PoissonInput redraws every predict()
         compiler = InferenceCompiler(evaluate_timesteps=self._timesteps,
-                                     batch_size=BATCH_SIZE, dt=DT)
+                                     batch_size=BATCH_SIZE, dt=DT,
+                                     rng_seed=self.config.seed)
         compiled_net = compiler.compile(network)
         with compiled_net:
             y_pred, _ = compiled_net.predict({input_pop: encoded.data}, [output_pop])

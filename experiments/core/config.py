@@ -27,7 +27,7 @@ class ExperimentConfig:
     model: str = "har_rv"
     encoding: str = "rate"            #used by the SNN only
     test_sampling: str = "nonoverlap"  #nonoverlap | daily
-    seed: int = 0
+    seed: int = 1                     #0 means unseeded to GeNN
     input_window: int | None = None   #sequence length T; None ties it to the horizon
     num_epochs: int = 50
     learning_rate: float = 0.001
@@ -42,6 +42,9 @@ class ExperimentConfig:
         if self.horizon == "monthly" and self.iv_leg == "vix9d":
             raise ValueError("the monthly panel has no VIX9D leg, "
                              "use --iv-leg vix with --horizon monthly")
+        #GeNN reads 0 as unseeded
+        if self.seed == 0:
+            raise ValueError("seed 0 means 'unseeded' to GeNN, use any other value")
 
     @classmethod
     def load(cls, **overrides: object) -> "ExperimentConfig":
