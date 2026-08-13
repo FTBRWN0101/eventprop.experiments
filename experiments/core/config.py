@@ -14,6 +14,9 @@ HORIZON_DAYS: dict[str, int] = {"weekly": 5, "monthly": 21}
 #no options inputs, for the ablation
 PRICE_ONLY_FEATURES: tuple[str, ...] = ("rv_1", "rv_5", "rv_21", "spx_logret")
 
+#dropped: too noisy, or train/test distributions drift
+EXCLUDED_FEATURES: tuple[str, ...] = ("spx_logret", "vix_logret", "skew", "ts_slope")
+
 
 @dataclass(frozen=True)
 class ExperimentConfig:

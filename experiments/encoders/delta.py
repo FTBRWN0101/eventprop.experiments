@@ -19,6 +19,7 @@ class DeltaEncoder(Encoder):
     name = "delta"
     description = "Spike on significant change; adaptive threshold (primary hypothesis)"
     kind = "spikes"
+    input_space = "raw"
 
     def __init__(self, multiplier: float = DEFAULT_MULTIPLIER) -> None:
         self.multiplier = multiplier

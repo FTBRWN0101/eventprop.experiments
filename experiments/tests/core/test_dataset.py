@@ -30,12 +30,12 @@ def test_long_window_keeps_early_test_dates():
 
 
 def test_window_ends_on_evaluation_date(default_data):
-    X, _, dates = default_data.sequences("test")
+    X, _, dates = default_data.sequences("test", space="zscore")
     frame = default_data.daily("full")
     cols = default_data.feature_columns(frame)
-    mean, std = default_data._fit_scaler(cols)
-    row = (frame.loc[dates[0], cols].to_numpy() - mean) / std
-    np.testing.assert_allclose(X[0, -1], row, rtol=1e-10)
+    row, _ = default_data._apply_transform(
+        frame.loc[[dates[0]], cols].to_numpy(), cols, "zscore")
+    np.testing.assert_allclose(X[0, -1], row[0], rtol=1e-10)
 
 
 def test_target_round_trip(default_data):
@@ -56,14 +56,51 @@ def test_scaler_excludes_val_under_holdout():
     held = VrpDataset(ExperimentConfig.load(holdout_val=True))
     full = VrpDataset(ExperimentConfig.load())
     cols = held.feature_columns(held.daily("train"))
-    held_mean, _ = held._fit_scaler(cols)
-    full_mean, _ = full._fit_scaler(cols)
-    assert not np.allclose(held_mean, full_mean)
+    held_means = np.array([m for m, _ in held._fit_transform(cols, "zscore")])
+    full_means = np.array([m for m, _ in full._fit_transform(cols, "zscore")])
+    assert not np.allclose(held_means, full_means)
 
     manual = pd.read_csv(held.config.processed_path("train"), parse_dates=["date"])
     manual = manual.set_index("date").sort_index()
-    manual = manual.loc[manual.index < "2017-01-01", cols].dropna().to_numpy().mean(axis=0)
-    np.testing.assert_allclose(held_mean, manual)
+    manual = manual.loc[manual.index < "2017-01-01"]
+    #per column on its own non-NaN rows
+    expected = np.array([manual[c].dropna().mean() for c in cols])
+    np.testing.assert_allclose(held_means, expected)
+
+
+def test_transform_basis_is_invariant_to_feature_set():
+    """A shared feature must be scaled identically in both ablation arms."""
+    options = VrpDataset(ExperimentConfig.load(feature_set="options+price"))
+    price = VrpDataset(ExperimentConfig.load(feature_set="price-only"))
+    shared = "rv_1"
+    o_cols = options.feature_columns(options.daily("full"))
+    p_cols = price.feature_columns(price.daily("full"))
+    o_fit = options._fit_transform(o_cols, "zscore")[o_cols.index(shared)]
+    p_fit = price._fit_transform(p_cols, "zscore")[p_cols.index(shared)]
+    np.testing.assert_allclose(o_fit, p_fit)
+
+
+def test_unit_space_is_bounded_and_monotone(default_data):
+    frame = default_data.daily("full")
+    cols = default_data.feature_columns(frame)
+    values = frame[cols].to_numpy()
+    out, pinned = default_data._apply_transform(values, cols, "unit")
+    finite = np.isfinite(out)
+    assert out[finite].min() >= 0.0 and out[finite].max() <= 1.0
+    #sorting by raw value must leave the transform non-decreasing
+    column = values[:, 0]
+    keep = np.isfinite(column)
+    order = np.argsort(column[keep])
+    assert np.all(np.diff(out[keep, 0][order]) >= -1e-12)
+    #saturation must be recorded, not silent
+    assert set(pinned) == set(cols)
+
+
+def test_excluded_features_are_absent(default_data):
+    from core.config import EXCLUDED_FEATURES
+
+    cols = default_data.feature_columns(default_data.daily("full"))
+    assert not set(cols) & set(EXCLUDED_FEATURES)
 
 
 def test_sample_start_trims_all_splits():

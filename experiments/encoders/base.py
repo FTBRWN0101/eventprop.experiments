@@ -28,6 +28,8 @@ class Encoder(ABC):
     name: ClassVar[str] = ""
     description: ClassVar[str] = ""
     kind: ClassVar[str] = "spikes"
+    #what the encoder wants: unit, zscore or raw
+    input_space: ClassVar[str] = "unit"
 
     def __init_subclass__(cls, **kwargs: object) -> None:
         super().__init_subclass__(**kwargs)

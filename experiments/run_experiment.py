@@ -32,6 +32,11 @@ def run(config: ExperimentConfig, model_names: list[str]) -> tuple[
     MODELS.discover(_ROOT / "models", "models")
     data = VrpDataset(config)
 
+    #constants available at train time only
+    train = data.split("train")
+    train_target_mean = float(train.target.mean())
+    train_rv_mean = float(train.rv_fwd.mean())
+
     results: dict[str, dict[str, float]] = {}
     errors: dict[str, object] = {}
     predictions: dict[str, pd.Series] = {}
@@ -42,13 +47,12 @@ def run(config: ExperimentConfig, model_names: list[str]) -> tuple[
         pred = model.predict(data, "test")
         predictions[name] = pred
         split = data.split("test")
-        results[name] = metrics.evaluate(split, pred)
+        results[name] = metrics.evaluate(split, pred, train_target_mean, train_rv_mean)
         errors[name] = metrics.squared_errors(split, pred)
         diag = {}
-        if hasattr(model, "fitted_range"):
-            diag["fitted_range"] = model.fitted_range
-        if hasattr(model, "silent_neuron_fraction"):
-            diag["silent_neuron_fraction"] = model.silent_neuron_fraction
+        for attribute in ("fitted_range", "silent_neuron_fraction", "pinned_fraction"):
+            if hasattr(model, attribute):
+                diag[attribute] = getattr(model, attribute)
         if diag:
             diagnostics[name] = diag
 
@@ -69,13 +73,15 @@ def _print_table(config: ExperimentConfig, results: dict[str, dict[str, float]])
     logger.info("\n%s | target=%s | iv_leg=%s | features=%s | test=%s",
                 config.horizon, config.target, config.iv_leg,
                 config.feature_set, config.test_sampling)
-    header = f"{'model':<10} {'n':>5} {'MSE':>9} {'MAE':>8} {'dirAcc':>7} " \
-             f"{'QLIKE':>8} {'MZ-R2':>7} {'DMvsHAR':>8} {'p':>6}"
+    #r2_rv is primary, gate must be > 0; corr2 is Mincer-Zarnowitz, not OOS
+    header = f"{'model':<12} {'n':>5} {'R2rv':>7} {'gate':>7} {'MSE':>9} {'QLIKE':>8} " \
+             f"{'corr2':>7} {'disp':>6} {'DMvsHAR':>8} {'p':>6}"
     logger.info(header)
     for name, m in results.items():
         logger.info(
-            f"{name:<10} {int(m['n']):>5} {m['mse']:>9.3f} {m['mae']:>8.3f} "
-            f"{m['dir_acc']:>7.3f} {m['qlike']:>8.4f} {m['mz_r2']:>7.3f} "
+            f"{name:<12} {int(m['n']):>5} {m['r2_rv']:>7.3f} {m['gate']:>7.3f} "
+            f"{m['mse']:>9.3f} {m['qlike']:>8.4f} {m['mz_r2']:>7.3f} "
+            f"{m['dispersion']:>6.2f} "
             f"{m.get('dm_vs_har', float('nan')):>8.3f} {m.get('dm_p', float('nan')):>6.3f}")
 
 
@@ -89,8 +95,8 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
     parser.add_argument("--test-sampling", default="nonoverlap",
                         choices=["nonoverlap", "daily"])
     parser.add_argument("--encoding", default="rate",
-                        choices=["rate", "latency", "population", "delta"],
-                        help="Spike encoding for the SNN (ignored by other models).")
+                        choices=["rate", "population", "delta"],
+                        help="Spike encoding, SNN only.")
     parser.add_argument("--models", default="har_rv,garch",
                         help="Comma-separated model names to run.")
     parser.add_argument("--seed", type=int, default=1,

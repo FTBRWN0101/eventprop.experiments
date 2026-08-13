@@ -209,7 +209,11 @@ class SnnForecaster(Forecaster):
         #mlGeNN shuffles with numpy's global RNG, so seed that too
         np.random.seed(self.config.seed)
 
-        X, y, train_dates = data.sequences("train")
+        #the encoder picks its own representation
+        self._encoder = self._get_encoder()
+        X, y, train_dates = data.sequences("train", space=self._encoder.input_space)
+        #record what fell outside the training support
+        self.pinned_fraction = dict(data.pinned_fraction)
         #mlGeNN wants full batches; drop the trailing partial one
         n_complete = (X.shape[0] // BATCH_SIZE) * BATCH_SIZE
         X, y = X[:n_complete], y[:n_complete]
@@ -220,7 +224,6 @@ class SnnForecaster(Forecaster):
         self._y_mean, self._y_std = float(y.mean()), float(y.std() or 1.0)
         y_norm = (y - self._y_mean) / self._y_std
 
-        self._encoder = self._get_encoder()
         self._encoder.fit(X)
         encoded = self._encoder.encode(X)
         max_spikes = self._max_spikes(encoded)
@@ -293,7 +296,7 @@ class SnnForecaster(Forecaster):
             raise FileNotFoundError(
                 f"{missing} absent from {checkpoint_dir}, run fit() first")
 
-        X, _, dates = data.sequences(split)
+        X, _, dates = data.sequences(split, space=self._encoder.input_space)
         #mlGeNN wants full batches; pad with repeats, trimmed below
         n = X.shape[0]
         pad = (-n) % BATCH_SIZE

@@ -7,7 +7,7 @@ from dataclasses import dataclass
 import numpy as np
 import pandas as pd
 
-from core.config import PRICE_ONLY_FEATURES, ExperimentConfig
+from core.config import EXCLUDED_FEATURES, PRICE_ONLY_FEATURES, ExperimentConfig
 
 #targets, never inputs
 _TARGET_PREFIXES = ("iv_", "vrp_", "rvrp_")
@@ -52,7 +52,10 @@ class VrpDataset:
     def __init__(self, config: ExperimentConfig) -> None:
         self.config = config
         self._cache: dict[str, pd.DataFrame] = {}
-        self._scaler: tuple[np.ndarray, np.ndarray] | None = None
+        self._transform: list | None = None
+        self._transform_key: tuple | None = None
+        #column -> fraction of values pinned to a bound
+        self.pinned_fraction: dict[str, float] = {}
 
     def daily(self, split: str) -> pd.DataFrame:
         """The daily frame for *split* (``train``/``val``/``test``/``full``), date-indexed."""
@@ -75,7 +78,8 @@ class VrpDataset:
 
     def feature_columns(self, frame: pd.DataFrame) -> list[str]:
         """Model-input columns for the configured feature set."""
-        columns = [c for c in frame.columns if not _is_target_column(c)]
+        columns = [c for c in frame.columns
+                   if not _is_target_column(c) and c not in EXCLUDED_FEATURES]
         if self.config.feature_set == "price-only":
             return [c for c in columns if c in PRICE_ONLY_FEATURES]
         return columns
@@ -102,23 +106,68 @@ class VrpDataset:
             rv_fwd=view["__rv__"], iv=view["__iv__"], denom=view["__denom__"],
             target_kind=cfg.target, horizon_days=cfg.horizon_days)
 
-    def _fit_scaler(self, columns: list[str]) -> tuple[np.ndarray, np.ndarray]:
-        if self._scaler is None:
-            train = self.daily("train")[columns].dropna()
-            mean = train.to_numpy().mean(axis=0)
-            std = train.to_numpy().std(axis=0)
-            std[std == 0] = 1.0
-            self._scaler = (mean, std)
-        return self._scaler
+    def _fit_transform(self, columns: list[str], space: str) -> list:
+        """Fit one transform per column on that column's own daily training rows.
 
-    def sequences(self, name: str) -> tuple[np.ndarray, np.ndarray, pd.DatetimeIndex]:
-        """Return ``(X[N, T, F], y[N], dates)`` of length-``sequence_length`` windows."""
+        ``space`` picks the output representation: raw, zscore or unit.
+        """
+        key = (tuple(columns), space)
+        if self._transform_key != key:
+            train = self.daily("train")
+            fitted = []
+            for column in columns:
+                values = train[column].dropna().to_numpy()
+                if space == "unit":
+                    fitted.append(np.sort(values))
+                elif space == "zscore":
+                    std = values.std()
+                    fitted.append((values.mean(), std if std else 1.0))
+                else:
+                    fitted.append(None)
+            self._transform_key, self._transform = key, fitted
+        return self._transform
+
+    def _apply_transform(self, values: np.ndarray, columns: list[str],
+                         space: str) -> tuple[np.ndarray, dict[str, float]]:
+        """Apply the fitted per-column transform; also return the pinning rate per column."""
+        fitted = self._fit_transform(columns, space)
+        out = np.empty_like(values, dtype=float)
+        pinned: dict[str, float] = {}
+        for index, column in enumerate(columns):
+            column_values = values[:, index]
+            if space == "unit":
+                sorted_train = fitted[index]
+                denominator = max(len(sorted_train) - 1, 1)
+                transformed = np.clip(
+                    np.searchsorted(sorted_train, column_values, side="left")
+                    / denominator, 0.0, 1.0)
+                finite = np.isfinite(column_values)
+                pinned[column] = float(
+                    np.mean((transformed[finite] <= 0.0) | (transformed[finite] >= 1.0))
+                ) if finite.any() else float("nan")
+            elif space == "zscore":
+                mean, std = fitted[index]
+                transformed = (column_values - mean) / std
+                pinned[column] = 0.0
+            else:
+                transformed = column_values
+                pinned[column] = 0.0
+            out[:, index] = transformed
+        return out, pinned
+
+    def sequences(self, name: str,
+                  space: str = "zscore") -> tuple[np.ndarray, np.ndarray, pd.DatetimeIndex]:
+        """Return ``(X[N, T, F], y[N], dates)`` of length-``sequence_length`` windows.
+
+        Windows end on the dates :meth:`split` serves, so every model scores the
+        same set. History may reach back across the split boundary, never forward.
+        """
         cfg = self.config
         frame = self.daily("full")
         columns = self.feature_columns(frame)
-        mean, std = self._fit_scaler(columns)
 
-        feats = (frame[columns].to_numpy() - mean) / std
+        feats, pinned = self._apply_transform(
+            frame[columns].to_numpy(), columns, space)
         target = frame[cfg.target_column].to_numpy()
         dates = frame.index
         window = cfg.sequence_length
@@ -137,5 +186,14 @@ class VrpDataset:
             x_rows.append(feats[end - window + 1:end + 1])
             y_rows.append(y)
             end_dates.append(dates[end])
-        return (np.asarray(x_rows), np.asarray(y_rows),
-                pd.DatetimeIndex(end_dates))
+
+        X = np.asarray(x_rows)
+        #over the windows returned, not the whole frame
+        if space == "unit" and X.size:
+            flat = X.reshape(-1, X.shape[2])
+            self.pinned_fraction = {
+                column: float(np.mean((flat[:, i] <= 0.0) | (flat[:, i] >= 1.0)))
+                for i, column in enumerate(columns)}
+        else:
+            self.pinned_fraction = dict.fromkeys(columns, 0.0)
+        return X, np.asarray(y_rows), pd.DatetimeIndex(end_dates)
