@@ -15,7 +15,7 @@ if str(_ROOT) not in sys.path:
 import pandas as pd  #noqa: E402
 
 from core import metrics  #noqa: E402
-from core.config import ExperimentConfig  #noqa: E402
+from core.config import ALGORITHMS, ExperimentConfig  #noqa: E402
 from core.dataset import VrpDataset  #noqa: E402
 from core.results import save_run  #noqa: E402
 from models.base import MODELS  #noqa: E402
@@ -97,6 +97,10 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
     parser.add_argument("--encoding", default="rate",
                         choices=["rate", "population", "delta"],
                         help="Spike encoding, SNN only.")
+    parser.add_argument("--algorithm", default="eventprop",
+                        choices=list(ALGORITHMS),
+                        help="SNN training algorithm. The two arms are not the same network, "
+                             "see models/snn.py.")
     parser.add_argument("--models", default="har_rv,garch",
                         help="Comma-separated model names to run.")
     parser.add_argument("--seed", type=int, default=1,
@@ -120,7 +124,8 @@ def main(argv: list[str] | None = None) -> None:
     config = ExperimentConfig.load(
         horizon=args.horizon, target=args.target, iv_leg=args.iv_leg,
         feature_set=args.feature_set, test_sampling=args.test_sampling,
-        encoding=args.encoding, seed=args.seed, input_window=args.input_window,
+        encoding=args.encoding, algorithm=args.algorithm, seed=args.seed,
+        input_window=args.input_window,
         sample_start=args.sample_start, num_epochs=args.num_epochs,
         learning_rate=args.learning_rate, delta_multiplier=args.delta_multiplier,
         holdout_val=args.holdout_val)

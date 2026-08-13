@@ -17,6 +17,9 @@ PRICE_ONLY_FEATURES: tuple[str, ...] = ("rv_1", "rv_5", "rv_21", "spx_logret")
 #dropped: too noisy, or train/test distributions drift
 EXCLUDED_FEATURES: tuple[str, ...] = ("spx_logret", "vix_logret", "skew", "ts_slope")
 
+#not the same network either way, see models/snn.py
+ALGORITHMS: tuple[str, ...] = ("eventprop", "eprop")
+
 
 @dataclass(frozen=True)
 class ExperimentConfig:
@@ -29,6 +32,7 @@ class ExperimentConfig:
     feature_set: str = "options+price"  #options+price | price-only
     model: str = "har_rv"
     encoding: str = "rate"            #used by the SNN only
+    algorithm: str = "eventprop"      #eventprop | eprop; SNN only
     test_sampling: str = "nonoverlap"  #nonoverlap | daily
     seed: int = 1                     #0 means unseeded to GeNN
     input_window: int | None = None   #sequence length T; None ties it to the horizon
@@ -48,6 +52,9 @@ class ExperimentConfig:
         #GeNN reads 0 as unseeded
         if self.seed == 0:
             raise ValueError("seed 0 means 'unseeded' to GeNN, use any other value")
+        if self.algorithm not in ALGORITHMS:
+            raise ValueError(f"unknown algorithm {self.algorithm!r}, "
+                             f"expected one of {sorted(ALGORITHMS)}")
 
     @classmethod
     def load(cls, **overrides: object) -> "ExperimentConfig":

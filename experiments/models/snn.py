@@ -1,4 +1,4 @@
-"""SNN forecaster on mlGeNN, trained with EventProp.
+"""SNN forecaster on mlGeNN. EventProp or eprop, set by config.algorithm.
 
 One timestep is one trading day. Needs the mlgenn env, imported lazily.
 """
@@ -36,6 +36,11 @@ REG_LAMBDA = 1e-8
 REG_TARGET_DUTY_CYCLE = 0.3   #scales reg_nu_upper to the trial length
 
 SILENT_NEURON_DELTA_G = 0.002
+
+#eprop needs one, 1 step = 1 day
+TAU_REFRAC_EPROP = 1.0
+#not comparable with EventProp's REG_LAMBDA
+C_REG_EPROP = 3.0
 
 logger = logging.getLogger(__name__)
 
@@ -140,12 +145,26 @@ class SnnForecaster(Forecaster):
 
     def _build_network(self, encoded: EncodedInput, timesteps: int, max_spikes: int | None):
         from ml_genn import Connection, Network, Population
-        from ml_genn.compilers.event_prop_compiler import default_params
         from ml_genn.connectivity import Dense
         from ml_genn.initializers import Normal
         from ml_genn.neurons import (LeakyIntegrate, LeakyIntegrateFire,
                                      PoissonInput, SpikeInput)
-        from ml_genn.synapses import Exponential
+        from ml_genn.synapses import Delta, Exponential
+
+        eprop = self.config.algorithm == "eprop"
+        if eprop:
+            #eprop only takes Delta, and its defaults differ from EventProp's
+            from ml_genn.compilers.eprop_compiler import default_params
+            synapse = lambda: Delta()
+            #eprop rejects per-neuron tau_mem
+            tau_mem = TAU_MEM
+            #eprop needs a refractory period or it will not compile
+            tau_refrac = TAU_REFRAC_EPROP
+        else:
+            from ml_genn.compilers.event_prop_compiler import default_params
+            synapse = lambda: Exponential(TAU_SYN)
+            tau_mem = _sample_heterogeneous_tau_mem(NUM_HIDDEN, self.config.seed)
+            tau_refrac = None
 
         num_neurons = encoded.num_neurons
         network = Network(default_params)
@@ -158,23 +177,21 @@ class SnnForecaster(Forecaster):
             #name them, or a second network gets different checkpoint names
             input_pop = Population(input_neuron, num_neurons, name="input")
             hidden = Population(
-                LeakyIntegrateFire(v_thresh=V_THRESH,
-                                   tau_mem=_sample_heterogeneous_tau_mem(
-                                       NUM_HIDDEN, self.config.seed),
-                                   tau_refrac=None),
+                LeakyIntegrateFire(v_thresh=V_THRESH, tau_mem=tau_mem,
+                                   tau_refrac=tau_refrac),
                 NUM_HIDDEN, record_spikes=True, name="hidden")
             output = Population(
                 LeakyIntegrate(tau_mem=TAU_MEM_OUT, readout="var"), 1, name="output")
 
             Connection(input_pop, hidden,
                       Dense(Normal(mean=0.0, sd=W_IN_SCALE / np.sqrt(num_neurons))),
-                      Exponential(TAU_SYN))
+                      synapse())
             Connection(hidden, hidden,
                       Dense(Normal(mean=0.0, sd=W_REC_SCALE / np.sqrt(NUM_HIDDEN))),
-                      Exponential(TAU_SYN))
+                      synapse())
             Connection(hidden, output,
                       Dense(Normal(mean=0.0, sd=W_OUT_SCALE / np.sqrt(NUM_HIDDEN))),
-                      Exponential(TAU_SYN))
+                      synapse())
         return network, input_pop, hidden, output
 
     def _max_spikes(self, encoded: EncodedInput) -> int | None:
@@ -185,7 +202,8 @@ class SnnForecaster(Forecaster):
 
     def _checkpoint_dir(self, create: bool = False) -> Path:
         cfg = self.config
-        path = CHECKPOINT_ROOT / f"{cfg.horizon}_{cfg.target}_{cfg.iv_leg}_{cfg.encoding}"
+        path = (CHECKPOINT_ROOT /
+                f"{cfg.horizon}_{cfg.target}_{cfg.iv_leg}_{cfg.encoding}_{cfg.algorithm}")
         if create:
             path.mkdir(parents=True, exist_ok=True)
         return path
@@ -194,9 +212,13 @@ class SnnForecaster(Forecaster):
         """Weight files save() writes, named ``<epoch>-Conn_<src>_<dst>-g.npy``."""
         epoch = self.config.num_epochs - 1
         directory = self._checkpoint_dir()
-        return [directory / f"{epoch}-Conn_{src}_{dst}-g.npy"
-                for src, dst in (("input", "hidden"), ("hidden", "hidden"),
-                                 ("hidden", "output"))]
+        expected = [directory / f"{epoch}-Conn_{src}_{dst}-g.npy"
+                    for src, dst in (("input", "hidden"), ("hidden", "hidden"),
+                                     ("hidden", "output"))]
+        #eprop saves an output bias too
+        if self.config.algorithm == "eprop":
+            expected.append(directory / f"{epoch}-output-Bias.npy")
+        return expected
 
     def fit(self, data: VrpDataset) -> None:
         from ml_genn.callbacks import BatchProgressBar, SpikeRecorder
@@ -233,8 +255,22 @@ class SnnForecaster(Forecaster):
 
         network, input_pop, hidden_pop, output_pop = self._build_network(
             encoded, self._timesteps, max_spikes)
-        reg_nu_upper = max(1.0, REG_TARGET_DUTY_CYCLE * self._timesteps)
-        compiler = EventPropCompiler(example_timesteps=self._timesteps,
+        if self.config.algorithm == "eprop":
+            from ml_genn.compilers import EPropCompiler
+
+            #f_target is a duty cycle in Hz clothing, so convert
+            f_target = REG_TARGET_DUTY_CYCLE * 1000.0 / DT
+            #the 500.0 default never settles inside one trial
+            compiler = EPropCompiler(example_timesteps=self._timesteps,
+                                     losses="mean_square_error",
+                                     optimiser=Adam(self.config.learning_rate),
+                                     batch_size=BATCH_SIZE, dt=DT,
+                                     c_reg=C_REG_EPROP, f_target=f_target,
+                                     tau_reg=float(self._timesteps),
+                                     rng_seed=self.config.seed)
+        else:
+            reg_nu_upper = max(1.0, REG_TARGET_DUTY_CYCLE * self._timesteps)
+            compiler = EventPropCompiler(example_timesteps=self._timesteps,
                                      losses="mean_square_error",
                                      optimiser=Adam(self.config.learning_rate),
                                      batch_size=BATCH_SIZE, dt=DT, per_timestep_loss=True,
