@@ -57,6 +57,11 @@ class VrpPipeline:
         self.logger.info("  features: %d (%s)", len(panel.feature_columns),
                          ", ".join(panel.feature_columns))
         self.logger.info("  targets:  %s", ", ".join(panel.target_columns))
+        if panel.fill_counts:
+            self.logger.info("  gapfill:  %s (<=%d days carried forward)",
+                             ", ".join(f"{c}={n}" for c, n in
+                                       sorted(panel.fill_counts.items())),
+                             self.config.max_fill_gap)
         self.logger.info("  written:  %s", panel.paths["full"].parent)
 
 

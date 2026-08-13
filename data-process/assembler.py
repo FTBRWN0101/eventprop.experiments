@@ -24,6 +24,8 @@ class HorizonPanel:
     feature_columns: list[str]
     target_columns: list[str]
     paths: dict[str, Path] = field(default_factory=dict)
+    #column -> values carried forward that survived into full
+    fill_counts: dict[str, int] = field(default_factory=dict)
 
     @property
     def span(self) -> str:
@@ -59,9 +61,36 @@ class DatasetAssembler:
             raise ValueError(f"duplicate feature columns from builders: {', '.join(dupes)}")
         return frame, required
 
+    def fill_optional_gaps(self, features: pd.DataFrame,
+                           required: list[str]) -> tuple[pd.DataFrame, pd.DataFrame]:
+        """Carry short gaps forward in optional feature columns, within their live range.
+
+        Forward-only and bounded by ``config.max_fill_gap``, so no look-ahead.
+        Returns ``(features, filled_mask)``.
+        """
+        filled_mask = pd.DataFrame(False, index=features.index, columns=features.columns)
+        optional = [c for c in features.columns if c not in set(required)]
+        if not optional or self.config.max_fill_gap <= 0:
+            return features, filled_mask
+
+        features = features.copy()
+        for column in optional:
+            series = features[column]
+            first, last = series.first_valid_index(), series.last_valid_index()
+            if first is None:
+                continue
+            live = series.loc[first:last]
+            filled = live.ffill(limit=self.config.max_fill_gap)
+            gained = live.isna() & filled.notna()
+            if gained.any():
+                features.loc[first:last, column] = filled
+                filled_mask.loc[first:last, column] = gained
+        return features, filled_mask
+
     def assemble(self, raw: RawData, horizon: Horizon) -> HorizonPanel:
         """Produce the aligned, winsorised, split panel for *horizon*."""
         features, required = self.feature_frame(raw)
+        features, filled_mask = self.fill_optional_gaps(features, required)
         target = self.targets.build(raw, horizon)
         target_columns = list(target.columns)
 
@@ -79,10 +108,14 @@ class DatasetAssembler:
         target_set = set(target_columns) | set(winsor_columns)
         train = panel.loc[panel.index < self.config.split_ts]
         test = panel.loc[panel.index >= self.config.split_ts]
+        #only the filled cells that survived gating
+        surviving = filled_mask.reindex(panel.index).fillna(False)
+        fill_counts = {c: int(n) for c, n in surviving.sum().items() if n}
         return HorizonPanel(
             horizon=horizon, full=panel, train=train, test=test,
             feature_columns=[c for c in panel.columns if c not in target_set],
             target_columns=[c for c in panel.columns if c in target_set],
+            fill_counts=fill_counts,
         )
 
     def _winsorise(self, panel: pd.DataFrame,

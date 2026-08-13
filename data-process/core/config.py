@@ -45,6 +45,8 @@ class ProcessConfig:
     test_end: str | None = "2025-12-31"
     #bounds fitted on train only, no look-ahead
     winsor_quantiles: tuple[float, float] = (0.01, 0.99)
+    #carry short CBOE gaps forward, longer ones stay NaN
+    max_fill_gap: int = 5
 
     def legs_for(self, horizon: Horizon) -> tuple[str, ...]:
         """Implied-vol legs to build for *horizon* (defaults to the 30-day VIX)."""
