@@ -27,3 +27,6 @@ docs/
 
 #run artifacts
 experiments/results/
+
+#documents
+*.pdf
