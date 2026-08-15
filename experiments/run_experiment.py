@@ -91,7 +91,7 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
     parser.add_argument("--target", default="vrp", choices=["vrp", "rvrp", "vvrp"])
     parser.add_argument("--iv-leg", default="vix9d", choices=["vix", "vix9d"])
     parser.add_argument("--feature-set", default="options+price",
-                        choices=["options+price", "price-only"])
+                        choices=["options+price", "price-only", "options+price+surface"])
     parser.add_argument("--test-sampling", default="nonoverlap",
                         choices=["nonoverlap", "daily"])
     parser.add_argument("--encoding", default="rate",

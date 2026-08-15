@@ -14,6 +14,9 @@ HORIZON_DAYS: dict[str, int] = {"weekly": 5, "monthly": 21}
 #no options inputs, for the ablation
 PRICE_ONLY_FEATURES: tuple[str, ...] = ("rv_1", "rv_5", "rv_21", "spx_logret")
 
+#own arm, not folded into options+price: the surface has gaps and would reshape the sample
+SURFACE_FEATURES: tuple[str, ...] = ("om_atm30", "om_skew30", "om_term")
+
 #dropped: too noisy, or train/test distributions drift
 EXCLUDED_FEATURES: tuple[str, ...] = ("spx_logret", "vix_logret", "skew", "ts_slope")
 
@@ -29,7 +32,7 @@ class ExperimentConfig:
     horizon: str = "weekly"            #weekly | monthly
     target: str = "vrp"               #vrp | rvrp | vvrp (variance space)
     iv_leg: str = "vix9d"             #vix | vix9d (vix9d is weekly only, 2011+)
-    feature_set: str = "options+price"  #options+price | price-only
+    feature_set: str = "options+price"  #options+price | price-only | options+price+surface
     model: str = "har_rv"
     encoding: str = "rate"            #used by the SNN only
     algorithm: str = "eventprop"      #eventprop | eprop; SNN only

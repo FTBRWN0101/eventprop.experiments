@@ -7,7 +7,8 @@ from dataclasses import dataclass
 import numpy as np
 import pandas as pd
 
-from core.config import EXCLUDED_FEATURES, PRICE_ONLY_FEATURES, ExperimentConfig
+from core.config import (EXCLUDED_FEATURES, PRICE_ONLY_FEATURES, SURFACE_FEATURES,
+                         ExperimentConfig)
 
 #targets, never inputs
 _TARGET_PREFIXES = ("iv_", "vrp_", "rvrp_", "vvrp_")
@@ -87,6 +88,8 @@ class VrpDataset:
                    if not _is_target_column(c) and c not in EXCLUDED_FEATURES]
         if self.config.feature_set == "price-only":
             return [c for c in columns if c in PRICE_ONLY_FEATURES]
+        if self.config.feature_set == "options+price":
+            return [c for c in columns if c not in SURFACE_FEATURES]
         return columns
 
     def split(self, name: str) -> Split:
