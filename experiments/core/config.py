@@ -27,7 +27,7 @@ class ExperimentConfig:
 
     repo_root: Path = _REPO_ROOT
     horizon: str = "weekly"            #weekly | monthly
-    target: str = "vrp"               #vrp | rvrp
+    target: str = "vrp"               #vrp | rvrp | vvrp (variance space)
     iv_leg: str = "vix9d"             #vix | vix9d (vix9d is weekly only, 2011+)
     feature_set: str = "options+price"  #options+price | price-only
     model: str = "har_rv"

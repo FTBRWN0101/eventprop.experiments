@@ -40,4 +40,6 @@ class TargetBuilder:
             columns[f"iv_{leg}"] = iv
             columns[f"vrp_{leg}"] = vrp
             columns[f"rvrp_{leg}"] = vrp / denom
+            #variance space, so units are vol-points squared, ~100x the vrp_ columns
+            columns[f"vvrp_{leg}"] = iv**2 - rv_fwd**2
         return pd.DataFrame(columns)

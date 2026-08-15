@@ -88,7 +88,7 @@ def _print_table(config: ExperimentConfig, results: dict[str, dict[str, float]])
 def _parse_args(argv: list[str] | None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Train/evaluate VRP forecasters.")
     parser.add_argument("--horizon", default="weekly", choices=["weekly", "monthly"])
-    parser.add_argument("--target", default="vrp", choices=["vrp", "rvrp"])
+    parser.add_argument("--target", default="vrp", choices=["vrp", "rvrp", "vvrp"])
     parser.add_argument("--iv-leg", default="vix9d", choices=["vix", "vix9d"])
     parser.add_argument("--feature-set", default="options+price",
                         choices=["options+price", "price-only"])

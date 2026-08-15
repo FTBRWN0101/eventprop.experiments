@@ -10,7 +10,7 @@ import pandas as pd
 from core.config import EXCLUDED_FEATURES, PRICE_ONLY_FEATURES, ExperimentConfig
 
 #targets, never inputs
-_TARGET_PREFIXES = ("iv_", "vrp_", "rvrp_")
+_TARGET_PREFIXES = ("iv_", "vrp_", "rvrp_", "vvrp_")
 
 
 def _is_target_column(column: str) -> bool:
@@ -27,18 +27,23 @@ class Split:
     rv_fwd: pd.Series        #realised forward vol (for QLIKE)
     iv: pd.Series            #implied-vol leg level at t
     denom: pd.Series         #smoothed IV leg (rVRP denominator)
-    target_kind: str         #"vrp" | "rvrp"
+    target_kind: str         #"vrp" | "rvrp" | "vvrp"
     horizon_days: int
 
     def to_target(self, rv_fwd_hat: pd.Series) -> pd.Series:
-        """Convert a forward-vol forecast into a VRP/rVRP forecast (RV-based models)."""
+        """Convert a forward-vol forecast into a VRP/rVRP/vVRP forecast (RV-based models)."""
+        if self.target_kind == "vvrp":
+            return self.iv**2 - rv_fwd_hat**2
         premium = self.iv - rv_fwd_hat
         if self.target_kind == "vrp":
             return premium
         return premium / self.denom
 
     def to_rv_fwd(self, target_hat: pd.Series) -> pd.Series:
-        """Invert a VRP/rVRP forecast back to a forward-vol forecast (for QLIKE)."""
+        """Invert a VRP/rVRP/vVRP forecast back to a forward-vol forecast (for QLIKE)."""
+        if self.target_kind == "vvrp":
+            #a forecast can imply negative variance; clip so the sqrt stays real
+            return np.sqrt(np.maximum(self.iv**2 - target_hat, 0.0))
         if self.target_kind == "vrp":
             return self.iv - target_hat
         return self.iv - target_hat * self.denom
