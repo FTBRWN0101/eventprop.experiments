@@ -25,7 +25,7 @@ class PopulationEncoder(Encoder):
         self._centers = np.linspace(0.0, 1.0, NUM_CENTERS)
         self._sigma = 1.0 / (NUM_CENTERS - 1)
 
-    def fit(self, X: np.ndarray) -> None:
+    def fit(self, X: np.ndarray, scale: np.ndarray | None = None) -> None:
         """No-op: fields tile the unit interval, which the rank transform already targets."""
 
     def _events(self, X: np.ndarray) -> tuple[list[np.ndarray], list[np.ndarray], int]:
@@ -45,7 +45,7 @@ class PopulationEncoder(Encoder):
             ids_list.append((ff * NUM_CENTERS + cc).astype(np.int64))
         return times_list, ids_list, num_neurons
 
-    def encode(self, X: np.ndarray) -> EncodedInput:
+    def encode(self, X: np.ndarray, scale: np.ndarray | None = None) -> EncodedInput:
         from ml_genn.utils.data import preprocess_spikes
 
         times_list, ids_list, num_neurons = self._events(X)

@@ -13,6 +13,10 @@ from core.config import (EXCLUDED_FEATURES, PRICE_ONLY_FEATURES, SURFACE_FEATURE
 #targets, never inputs
 _TARGET_PREFIXES = ("iv_", "vrp_", "rvrp_", "vvrp_")
 
+#rolling window for the adaptive delta threshold, and the minimum history for one
+SCALE_WINDOW = 20
+SCALE_MIN_PERIODS = 5
+
 
 def _is_target_column(column: str) -> bool:
     return column == "rv_fwd" or column.startswith(_TARGET_PREFIXES)
@@ -62,6 +66,8 @@ class VrpDataset:
         self._transform_key: tuple | None = None
         #column -> fraction of values pinned to a bound
         self.pinned_fraction: dict[str, float] = {}
+        #[N, T, F] causal increment scale from the last sequences() call
+        self.window_scale: np.ndarray | None = None
 
     def daily(self, split: str) -> pd.DataFrame:
         """The daily frame for *split* (``train``/``val``/``test``/``full``), date-indexed."""
@@ -163,6 +169,13 @@ class VrpDataset:
             out[:, index] = transformed
         return out, pinned
 
+    @staticmethod
+    def _causal_scale(feats: np.ndarray) -> np.ndarray:
+        """Rolling std of daily increments, per column, using only days up to each row."""
+        diffs = pd.DataFrame(feats).diff()
+        rolled = diffs.rolling(SCALE_WINDOW, min_periods=SCALE_MIN_PERIODS).std()
+        return rolled.to_numpy()
+
     def sequences(self, name: str,
                   space: str = "zscore") -> tuple[np.ndarray, np.ndarray, pd.DatetimeIndex]:
         """Return ``(X[N, T, F], y[N], dates)`` of length-``sequence_length`` windows.
@@ -179,12 +192,13 @@ class VrpDataset:
         target = frame[cfg.target_column].to_numpy()
         dates = frame.index
         window = cfg.sequence_length
+        scale_daily = self._causal_scale(feats)
 
         wanted = set(self.split(name).target.index)
         positions = {d: i for i, d in enumerate(dates)}
         ends = sorted(positions[d] for d in wanted if d in positions)
 
-        x_rows, y_rows, end_dates = [], [], []
+        x_rows, y_rows, end_dates, scale_rows = [], [], [], []
         for end in ends:
             if end - window + 1 < 0:
                 continue
@@ -192,10 +206,13 @@ class VrpDataset:
             if np.isnan(y) or np.isnan(feats[end - window + 1:end + 1]).any():
                 continue
             x_rows.append(feats[end - window + 1:end + 1])
+            scale_rows.append(scale_daily[end - window + 1:end + 1])
             y_rows.append(y)
             end_dates.append(dates[end])
 
         X = np.asarray(x_rows)
+        #a short window is a missing threshold, not a missing feature, so it is not gated
+        self.window_scale = np.asarray(scale_rows)
         #over the windows returned, not the whole frame
         if space == "unit" and X.size:
             flat = X.reshape(-1, X.shape[2])

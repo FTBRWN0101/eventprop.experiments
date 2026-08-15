@@ -35,10 +35,13 @@ class Encoder(ABC):
         super().__init_subclass__(**kwargs)
         ENCODERS.register(cls)
 
+    #set by encoders that need the causal scale; only adaptive delta uses it
+    wants_scale: ClassVar[bool] = False
+
     @abstractmethod
-    def fit(self, X: np.ndarray) -> None:
+    def fit(self, X: np.ndarray, scale: np.ndarray | None = None) -> None:
         """Fit encoder statistics (value range, adaptive thresholds, ...) on train windows."""
 
     @abstractmethod
-    def encode(self, X: np.ndarray) -> EncodedInput:
+    def encode(self, X: np.ndarray, scale: np.ndarray | None = None) -> EncodedInput:
         """Encode standardised windows ``X[N, T, F]`` into network input."""

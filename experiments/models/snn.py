@@ -139,7 +139,7 @@ class SnnForecaster(Forecaster):
     def _get_encoder(self) -> Encoder:
         ENCODERS.discover(_ENCODERS_DIR, "encoders")
         cls = ENCODERS.get(self.config.encoding)
-        if self.config.encoding == "delta":
+        if self.config.encoding.startswith("delta"):
             return cls(multiplier=self.config.delta_multiplier)
         return cls()
 
@@ -234,11 +234,14 @@ class SnnForecaster(Forecaster):
         #the encoder picks its own representation
         self._encoder = self._get_encoder()
         X, y, train_dates = data.sequences("train", space=self._encoder.input_space)
+        scale = data.window_scale if self._encoder.wants_scale else None
         #record what fell outside the training support
         self.pinned_fraction = dict(data.pinned_fraction)
         #mlGeNN wants full batches; drop the trailing partial one
         n_complete = (X.shape[0] // BATCH_SIZE) * BATCH_SIZE
         X, y = X[:n_complete], y[:n_complete]
+        if scale is not None:
+            scale = scale[:n_complete]
         self.fitted_range = (str(train_dates[0].date()),
                              str(train_dates[n_complete - 1].date()))
         num_epochs = self.config.num_epochs
@@ -246,8 +249,8 @@ class SnnForecaster(Forecaster):
         self._y_mean, self._y_std = float(y.mean()), float(y.std() or 1.0)
         y_norm = (y - self._y_mean) / self._y_std
 
-        self._encoder.fit(X)
-        encoded = self._encoder.encode(X)
+        self._encoder.fit(X, scale)
+        encoded = self._encoder.encode(X, scale)
         max_spikes = self._max_spikes(encoded)
 
         #per-timestep loss needs a target at every timestep
@@ -333,13 +336,16 @@ class SnnForecaster(Forecaster):
                 f"{missing} absent from {checkpoint_dir}, run fit() first")
 
         X, _, dates = data.sequences(split, space=self._encoder.input_space)
+        scale = data.window_scale if self._encoder.wants_scale else None
         #mlGeNN wants full batches; pad with repeats, trimmed below
         n = X.shape[0]
         pad = (-n) % BATCH_SIZE
         if pad:
             X = np.concatenate([X, np.repeat(X[-1:], pad, axis=0)], axis=0)
+            if scale is not None:
+                scale = np.concatenate([scale, np.repeat(scale[-1:], pad, axis=0)], axis=0)
 
-        encoded = self._encoder.encode(X)
+        encoded = self._encoder.encode(X, scale)
         max_spikes = self._max_spikes(encoded)
 
         network, input_pop, _, output_pop = self._build_network(

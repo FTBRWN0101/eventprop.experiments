@@ -18,10 +18,10 @@ class RateEncoder(Encoder):
     kind = "rate"
     input_space = "unit"
 
-    def fit(self, X: np.ndarray) -> None:
+    def fit(self, X: np.ndarray, scale: np.ndarray | None = None) -> None:
         """No-op: the rank transform is fitted upstream, per column, on the daily frame."""
 
-    def encode(self, X: np.ndarray) -> EncodedInput:
+    def encode(self, X: np.ndarray, scale: np.ndarray | None = None) -> EncodedInput:
         #clip defensively, PoissonInput must never get a negative rate
         rates = np.clip(X, 0.0, 1.0)
         return EncodedInput(kind="rate", data=rates, num_neurons=X.shape[2])
