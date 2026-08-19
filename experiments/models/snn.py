@@ -25,9 +25,11 @@ _ENCODERS_DIR = Path(__file__).resolve().parents[1] / "encoders"
 
 CHECKPOINT_EPOCHS = 10                #spike counts are checked between chunks
 SILENT_NEURON_WARN_THRESHOLD = 0.10   #raster review trigger
+RASTER_EXAMPLES = 4                   #windows whose full spike train is kept per chunk
 
 #from the mlGeNN eventprop example
 V_THRESH = 0.61
+#defaults for ExperimentConfig.w_in_scale / w_rec_scale, which override these
 W_IN_SCALE = 2.5
 W_REC_SCALE = 1.5
 W_OUT_SCALE = 2.0
@@ -119,6 +121,48 @@ def _make_silent_neuron_recovery_cls():
     return SilentNeuronRecovery
 
 
+def _make_ease_in_schedule_cls():
+    """Build the EaseInSchedule callback, following Nowotny et al. (2025).
+
+    Defined inside a function so importing this module does not need the mlgenn env.
+    """
+    from ml_genn.callbacks import Callback
+
+    class EaseInSchedule(Callback):
+        """Ramp alpha geometrically from target/1000 to target over *num_batches*.
+
+        The batch counter lives in a caller-owned dict on purpose. mlGeNN shallow
+        copies every callback per ``train()`` call (``utils/module.py:50``), and
+        ``fit`` calls ``train()`` once per checkpoint chunk, so an ``int`` attribute
+        would reset at each chunk boundary. Worse, mlGeNN's own ``batch`` argument
+        restarts at 0 every epoch (``compiled_training_network.py:184``), so the
+        reference implementation in the mlGeNN SHD example only completes because
+        that dataset has more batches per epoch than the ramp needs. This one does
+        not, so the ramp is driven off a counter that never resets.
+        """
+
+        def __init__(self, target_alpha: float, num_batches: int, state: dict):
+            self._target = target_alpha
+            #span the ramp inclusively: batch 0 sits at target/1000 and batch
+            #num_batches-1 at target exactly, so num_batches counts the ramp itself
+            self._rate = 1000.0 ** (1.0 / (num_batches - 1)) if num_batches > 1 else 0.0
+            self._state = state
+
+        def set_params(self, compiled_network, **kwargs):
+            self._optimisers = [o for o, _ in compiled_network.optimisers]
+
+        def on_batch_begin(self, batch):
+            step = self._state["batches"]
+            self._state["batches"] = step + 1
+            #num_batches == 1 means no ramp at all, so go straight to target
+            alpha = (self._target if self._rate == 0.0 else
+                     min(self._target, (self._target / 1000.0) * (self._rate ** step)))
+            for optimiser in self._optimisers:
+                optimiser.alpha = alpha
+
+    return EaseInSchedule
+
+
 def _silent_neuron_fraction(spike_counts) -> float:
     """Fraction of hidden neurons with zero recorded spikes. Pure numpy, so it
     runs without the mlgenn env.
@@ -153,12 +197,15 @@ class SnnForecaster(Forecaster):
 
         eprop = self.config.algorithm == "eprop"
         if eprop:
-            #eprop only takes Delta, and its defaults differ from EventProp's
+            #hard: eprop_compiler.py:474 raises on anything but Delta
             from ml_genn.compilers.eprop_compiler import default_params
             synapse = lambda: Delta()
-            #eprop rejects per-neuron tau_mem
+            #hard: eprop_compiler.py:103-108 raises on differing time constants
             tau_mem = TAU_MEM
-            #eprop needs a refractory period or it will not compile
+            #NOT hard. eprop_compiler.py:452-459 only logs a warning that eprop "works
+            #best with" a refractory period and a relative reset. Both are followed
+            #because the library recommends them, not because it enforces them -- so
+            #the EventProp arm can be given the same settings as a matched control.
             tau_refrac = TAU_REFRAC_EPROP
         else:
             from ml_genn.compilers.event_prop_compiler import default_params
@@ -183,11 +230,16 @@ class SnnForecaster(Forecaster):
             output = Population(
                 LeakyIntegrate(tau_mem=TAU_MEM_OUT, readout="var"), 1, name="output")
 
+            #swept from the CLI: the input population is small and sparse while the
+            #recurrent one is 256-wide, so the ratio of these two decides whether the
+            #hidden layer listens to the input or to itself (D64)
             Connection(input_pop, hidden,
-                      Dense(Normal(mean=0.0, sd=W_IN_SCALE / np.sqrt(num_neurons))),
+                      Dense(Normal(mean=0.0,
+                                   sd=self.config.w_in_scale / np.sqrt(num_neurons))),
                       synapse())
             Connection(hidden, hidden,
-                      Dense(Normal(mean=0.0, sd=W_REC_SCALE / np.sqrt(NUM_HIDDEN))),
+                      Dense(Normal(mean=0.0,
+                                   sd=self.config.w_rec_scale / np.sqrt(NUM_HIDDEN))),
                       synapse())
             Connection(hidden, output,
                       Dense(Normal(mean=0.0, sd=W_OUT_SCALE / np.sqrt(NUM_HIDDEN))),
@@ -200,13 +252,87 @@ class SnnForecaster(Forecaster):
         from ml_genn.utils.data import calc_max_spikes
         return BATCH_SIZE * calc_max_spikes(encoded.data)
 
+    def _loss_shaping_tau(self) -> float:
+        """Decay constant in timesteps. None means the trial length, i.e. exp(-t/T)."""
+        tau = self.config.loss_shaping_tau
+        return float(self._timesteps if tau is None else tau)
+
     def _checkpoint_dir(self, create: bool = False) -> Path:
+        #L and seed are part of the identity: without them a seed sweep writes every
+        #seed to one directory and an L sweep collides on top of it
         cfg = self.config
+        #same argument for loss shaping (D42); suffix only when on, so existing
+        #unshaped checkpoint paths are unchanged
+        shaping = ""
+        if cfg.loss_shaping:
+            tau = cfg.sequence_length if cfg.loss_shaping_tau is None else cfg.loss_shaping_tau
+            shaping = f"_ls{tau:g}"
+        #same again for the weight scales, or a drive sweep overwrites itself
+        scales = ""
+        if (cfg.w_in_scale, cfg.w_rec_scale) != (W_IN_SCALE, W_REC_SCALE):
+            scales = f"_wi{cfg.w_in_scale:g}_wr{cfg.w_rec_scale:g}"
+        #and again for the two training knobs, or a targeted search overwrites itself
+        regularisation = ""
+        if cfg.reg_target_duty_cycle != REG_TARGET_DUTY_CYCLE:
+            regularisation = f"_nu{cfg.reg_target_duty_cycle:g}"
+        ease_in = "" if cfg.lr_ease_in_batches is None else f"_ei{cfg.lr_ease_in_batches}"
         path = (CHECKPOINT_ROOT /
-                f"{cfg.horizon}_{cfg.target}_{cfg.iv_leg}_{cfg.encoding}_{cfg.algorithm}")
+                f"{cfg.horizon}_{cfg.target}_{cfg.iv_leg}_{cfg.encoding}_{cfg.algorithm}"
+                f"_L{cfg.sequence_length}_s{cfg.seed}{shaping}{scales}"
+                f"{regularisation}{ease_in}")
         if create:
             path.mkdir(parents=True, exist_ok=True)
         return path
+
+    def _raster_dir(self, create: bool = False) -> Path:
+        """Directory holding the per-checkpoint spike rasters."""
+        path = self._checkpoint_dir() / "rasters"
+        if create:
+            path.mkdir(parents=True, exist_ok=True)
+        return path
+
+    def _save_raster(self, raster, epoch: int) -> Path | None:
+        """Persist one chunk's sampled spike raster as ``rasters/epoch<N>.npz``.
+
+        ``raster`` is mlGeNN's ``(times, ids)`` pair of per-example lists. Examples
+        are drawn from the shuffled order, so a given slot is a different window each
+        epoch. That is fine for the pathology this watches for, which is population
+        wide, and it means the sample is not always the same four windows.
+        """
+        times, ids = raster
+        if not times:
+            return None
+        path = self._raster_dir(create=True) / f"epoch{epoch}.npz"
+        flat_times = np.concatenate([np.asarray(t) for t in times]) if times else np.empty(0)
+        flat_ids = np.concatenate([np.asarray(i) for i in ids]) if ids else np.empty(0)
+        example = np.concatenate(
+            [np.full(len(t), k, dtype=np.int32) for k, t in enumerate(times)])
+        np.savez_compressed(path, times=flat_times, ids=flat_ids, example=example,
+                            num_neurons=NUM_HIDDEN, timesteps=self._timesteps)
+        logger.debug("[snn] raster for %d examples written to %s", len(times), path)
+        return path
+
+    def _check_silent_fraction(self, fraction: float, epoch: int, total: int) -> None:
+        """Stop training when too many hidden neurons have gone silent.
+
+        The proposal pauses at 10% and reviews the recovery mechanism before
+        continuing, so the default is to raise rather than log and carry on. Both the
+        raster and the weights for the breaching checkpoint are already on disk when
+        this fires, so the run is diagnosable rather than lost.
+        """
+        if not fraction > SILENT_NEURON_WARN_THRESHOLD:
+            return
+        message = (f"[snn] spike deletion: {fraction * 100:.1f}% of hidden neurons "
+                   f"silent at epoch {epoch}/{total} "
+                   f"(>{SILENT_NEURON_WARN_THRESHOLD * 100:.0f}% threshold). "
+                   f"Weights and rasters for review are in "
+                   f"{self._checkpoint_dir()}.")
+        if self.config.silent_neuron_abort:
+            raise RuntimeError(
+                message + " Training stopped, as the proposal requires. Review loss "
+                "shaping and silent-neuron recovery, then rerun with "
+                "--allow-silent-neurons to continue past it.")
+        logger.warning("%s Continuing: --allow-silent-neurons is set.", message)
 
     def _expected_checkpoints(self) -> list[Path]:
         """Weight files save() writes, named ``<epoch>-Conn_<src>_<dst>-g.npy``."""
@@ -262,7 +388,7 @@ class SnnForecaster(Forecaster):
             from ml_genn.compilers import EPropCompiler
 
             #f_target is a duty cycle in Hz clothing, so convert
-            f_target = REG_TARGET_DUTY_CYCLE * 1000.0 / DT
+            f_target = self.config.reg_target_duty_cycle * 1000.0 / DT
             #the 500.0 default never settles inside one trial
             compiler = EPropCompiler(example_timesteps=self._timesteps,
                                      losses="mean_square_error",
@@ -272,17 +398,30 @@ class SnnForecaster(Forecaster):
                                      tau_reg=float(self._timesteps),
                                      rng_seed=self.config.seed)
         else:
-            reg_nu_upper = max(1.0, REG_TARGET_DUTY_CYCLE * self._timesteps)
-            compiler = EventPropCompiler(example_timesteps=self._timesteps,
-                                     losses="mean_square_error",
-                                     optimiser=Adam(self.config.learning_rate),
-                                     batch_size=BATCH_SIZE, dt=DT, per_timestep_loss=True,
-                                     reg_lambda_upper={hidden_pop: REG_LAMBDA},
-                                     reg_lambda_lower={hidden_pop: REG_LAMBDA},
-                                     reg_nu_upper=reg_nu_upper,
-                                     rng_seed=self.config.seed)
+            reg_nu_upper = max(1.0, self.config.reg_target_duty_cycle * self._timesteps)
+            kwargs = dict(example_timesteps=self._timesteps,
+                          losses="mean_square_error",
+                          optimiser=Adam(self.config.learning_rate),
+                          batch_size=BATCH_SIZE, dt=DT, per_timestep_loss=True,
+                          reg_lambda_upper={hidden_pop: REG_LAMBDA},
+                          reg_lambda_lower={hidden_pop: REG_LAMBDA},
+                          reg_nu_upper=reg_nu_upper,
+                          rng_seed=self.config.seed)
+            if self.config.loss_shaping:
+                from compilers.loss_shaping import make_loss_shaped_compiler_cls
+                compiler = make_loss_shaped_compiler_cls()(
+                    **kwargs, loss_shaping_tau=self._loss_shaping_tau())
+            else:
+                compiler = EventPropCompiler(**kwargs)
         compiled_net = compiler.compile(network)
         compiled_net.num_recording_timesteps = self._timesteps
+
+        #one shared counter for the whole run: see EaseInSchedule on why it is a dict
+        ease_in_state = {"batches": 0}
+        ease_in_batches = self.config.lr_ease_in_batches
+        if ease_in_batches is not None:
+            EaseInSchedule = _make_ease_in_schedule_cls()
+
         self.silent_neuron_fraction: list[float] = []
         with compiled_net:
             epochs_done = 0
@@ -290,30 +429,40 @@ class SnnForecaster(Forecaster):
                 chunk = min(CHECKPOINT_EPOCHS, num_epochs - epochs_done)
                 recorder = SpikeRecorder(hidden_pop, key="hidden_spikes",
                                          record_counts=True)
+                #a raster for a handful of examples: full spike times for every
+                #window would be gigabytes, and the diagnostic only needs a sample
+                raster = SpikeRecorder(hidden_pop, key="hidden_raster",
+                                       example_filter=list(range(RASTER_EXAMPLES)),
+                                       record_counts=False)
+                callbacks = [BatchProgressBar(), recorder, raster,
+                             SilentNeuronRecovery(hidden_pop)]
+                if ease_in_batches is not None:
+                    callbacks.append(EaseInSchedule(
+                        self.config.learning_rate, ease_in_batches, ease_in_state))
                 #callbacks get copied, so read the data from train()'s return
                 _, cb_data = compiled_net.train(
                     {input_pop: encoded.data}, {output_pop: y_full},
                     num_epochs=chunk, start_epoch=epochs_done, shuffle=True,
-                    callbacks=[BatchProgressBar(), recorder,
-                              SilentNeuronRecovery(hidden_pop)])
+                    callbacks=callbacks)
                 epochs_done += chunk
 
                 spike_counts = cb_data["hidden_spikes"]
                 silent_frac = _silent_neuron_fraction(spike_counts)
                 self.silent_neuron_fraction.append(silent_frac)
-                logger.info("[snn] epoch %d/%d: %.1f%% of hidden neurons silent",
-                           epochs_done, num_epochs, silent_frac * 100)
-                if silent_frac > SILENT_NEURON_WARN_THRESHOLD:
-                    logger.warning(
-                        "[snn] spike deletion: %.1f%% of hidden neurons silent at "
-                        "epoch %d/%d (>%.0f%% threshold), consider reviewing loss "
-                        "shaping / silent-neuron recovery",
-                        silent_frac * 100, epochs_done, num_epochs,
-                        SILENT_NEURON_WARN_THRESHOLD * 100)
-
-            #save(), not save_connectivity(): that one does nothing for Dense
-            compiled_net.save((num_epochs - 1,),
-                              Numpy(self._checkpoint_dir(create=True)))
+                self._save_raster(cb_data["hidden_raster"], epochs_done)
+                #checkpoint BEFORE the silent-neuron check, never after. The check
+                #raises, and a save placed after it would discard every epoch of GPU
+                #work in exactly the case the diagnostic is meant to be inspected.
+                #save(), not save_connectivity(): that one does nothing for Dense.
+                #The key prefixes the filename, so the final chunk writes the
+                #`num_epochs - 1` names _expected_checkpoints and predict() look for.
+                compiled_net.save((epochs_done - 1,),
+                                  Numpy(self._checkpoint_dir(create=True)))
+                logger.info("[snn] epoch %d/%d: %.1f%% of hidden neurons silent, "
+                            "weights checkpointed at key %d",
+                            epochs_done, num_epochs, silent_frac * 100,
+                            epochs_done - 1)
+                self._check_silent_fraction(silent_frac, epochs_done, num_epochs)
 
         missing = [f.name for f in self._expected_checkpoints()
                    if not f.exists()]

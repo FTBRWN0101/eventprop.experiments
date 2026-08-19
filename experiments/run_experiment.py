@@ -304,6 +304,25 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
     parser.add_argument("--delta-multiplier", type=float, default=1.0)
     parser.add_argument("--holdout-val", action="store_true",
                         help="Hold out 2017-2019 from train as a validation split.")
+    parser.add_argument("--loss-shaping", action="store_true",
+                        help="Contribution #6: exponential loss weight, EventProp only.")
+    parser.add_argument("--w-in-scale", type=float, default=2.5,
+                        help="Input->hidden weight scale (SNN). Raise it to give the "
+                             "hidden layer more external drive relative to recurrence.")
+    parser.add_argument("--w-rec-scale", type=float, default=1.5,
+                        help="Hidden->hidden recurrent weight scale (SNN).")
+    parser.add_argument("--loss-shaping-tau", type=float, default=None,
+                        help="Decay constant for the shaped loss "
+                             "(default: the sequence length, i.e. exp(-t/T)).")
+    parser.add_argument("--reg-target-duty-cycle", type=float, default=0.3,
+                        help="Regularisation spike-rate target as a duty cycle, "
+                             "SNN only. Third knob of the targeted search.")
+    parser.add_argument("--lr-ease-in-batches", type=int, default=None,
+                        help="Ramp the learning rate from 1/1000 of its value to "
+                             "full over this many batches (default: no ease-in).")
+    parser.add_argument("--allow-silent-neurons", action="store_true",
+                        help="Continue past the 10%% silent-hidden-neuron threshold "
+                             "instead of stopping for review.")
     parser.add_argument("--drop-features", default="",
                         help="Comma-separated feature columns to withhold, for the "
                              "per-signal ablation.")
@@ -328,6 +347,11 @@ def main(argv: list[str] | None = None) -> None:
         sample_start=args.sample_start, num_epochs=args.num_epochs,
         learning_rate=args.learning_rate, delta_multiplier=args.delta_multiplier,
         holdout_val=args.holdout_val,
+        loss_shaping=args.loss_shaping, loss_shaping_tau=args.loss_shaping_tau,
+        w_in_scale=args.w_in_scale, w_rec_scale=args.w_rec_scale,
+        reg_target_duty_cycle=args.reg_target_duty_cycle,
+        lr_ease_in_batches=args.lr_ease_in_batches,
+        silent_neuron_abort=not args.allow_silent_neurons,
         drop_features=_split_csv(args.drop_features),
         restore_features=_split_csv(args.restore_features))
     results, predictions, diagnostics, actual = run(

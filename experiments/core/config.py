@@ -52,6 +52,23 @@ class ExperimentConfig:
     sample_start: str | None = None   #ISO start date, same for every split and model
     delta_multiplier: float = 1.0     #delta encoder threshold multiplier
     holdout_val: bool = False         #carve 2017-2019 out of train as a validation set
+    #Contribution #6, EventProp only. Off keeps the uniform per-timestep loss.
+    loss_shaping: bool = False
+    #exp(-t/tau) decay in timesteps; None means tau = sequence_length, i.e. exp(-t/T)
+    loss_shaping_tau: float | None = None
+    #initial weight scales, divided by sqrt(fan-in). Their RATIO sets whether hidden
+    #listens to the input or to its own recurrence -- see D64.
+    w_in_scale: float = 2.5
+    w_rec_scale: float = 1.5
+    #regularisation spike-rate target, as a duty cycle. Third knob of the proposal's
+    #targeted search, with delta_multiplier and learning_rate. Feeds EventProp's
+    #reg_nu_upper and eprop's f_target, which are different units of the same intent.
+    reg_target_duty_cycle: float = 0.3
+    #geometric per-batch learning-rate ease-in, as in Nowotny et al. None disables it.
+    lr_ease_in_batches: int | None = None
+    #the proposal pauses training when >10% of hidden neurons go silent. Off lets a
+    #sweep run through the breach, with the raster still written for review.
+    silent_neuron_abort: bool = True
     #per-signal ablation. drop_features removes served columns; restore_features
     #re-admits ones EXCLUDED_FEATURES drops, which is how skew and ts_slope get
     #measured without putting them back in every headline run. Tuples, so the
@@ -75,11 +92,24 @@ class ExperimentConfig:
         if self.target not in TARGETS:
             raise ValueError(f"unknown target {self.target!r}, "
                              f"expected one of {sorted(TARGETS)}")
+        for name in ("w_in_scale", "w_rec_scale", "reg_target_duty_cycle"):
+            if not getattr(self, name) > 0:
+                raise ValueError(f"{name} must be positive, got {getattr(self, name)!r}")
+        if self.lr_ease_in_batches is not None and self.lr_ease_in_batches < 1:
+            raise ValueError(f"lr_ease_in_batches must be at least 1, "
+                             f"got {self.lr_ease_in_batches!r}")
         #restoring something that was never excluded is a typo, not a no-op
         unknown = set(self.restore_features) - set(EXCLUDED_FEATURES)
         if unknown:
             raise ValueError(f"restore_features names {sorted(unknown)}, which are not "
                              f"in EXCLUDED_FEATURES {sorted(EXCLUDED_FEATURES)}")
+        if self.loss_shaping_tau is not None and not self.loss_shaping_tau > 0:
+            raise ValueError(f"loss_shaping_tau must be positive, "
+                             f"got {self.loss_shaping_tau!r}")
+        #raise rather than ignore: eprop has its own gradient path and no drive to shape
+        if self.loss_shaping and self.algorithm != "eventprop":
+            raise ValueError(f"loss shaping patches the EventProp adjoint drive, "
+                             f"it does nothing under algorithm={self.algorithm!r}")
 
     @classmethod
     def load(cls, **overrides: object) -> "ExperimentConfig":

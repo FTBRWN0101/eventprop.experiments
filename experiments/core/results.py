@@ -21,10 +21,17 @@ def save_run(config: ExperimentConfig,
              diagnostics: dict[str, Any] | None = None,
              actual: pd.Series | None = None,
              root: Path | None = None) -> Path:
-    """Write one run to ``<root>/<timestamp>_<horizon>_<target>_<leg>/`` and return it."""
+    """Write one run to a timestamped, arm-identifying directory and return it.
+
+    Encoding/algorithm/L/seed are in the name because the matrix produces dozens of
+    runs that differ only in those. They are meaningless for non-SNN models, but the
+    authoritative record is config.json either way.
+    """
     stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
     root = RESULTS_ROOT if root is None else root
-    run_dir = root / f"{stamp}_{config.horizon}_{config.target}_{config.iv_leg}"
+    run_dir = root / (f"{stamp}_{config.horizon}_{config.target}_{config.iv_leg}"
+                      f"_{config.encoding}_{config.algorithm}"
+                      f"_L{config.sequence_length}_s{config.seed}")
     run_dir.mkdir(parents=True, exist_ok=True)
 
     cfg = {k: (str(v) if isinstance(v, Path) else v) for k, v in asdict(config).items()}
