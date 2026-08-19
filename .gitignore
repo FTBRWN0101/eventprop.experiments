@@ -25,6 +25,9 @@ experiments/.snn_checkpoints/
 #working notes, kept local
 docs/
 
+#dissertation write-up, kept local
+writeup/
+
 #run artifacts
 experiments/results/
 
