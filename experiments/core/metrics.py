@@ -21,11 +21,21 @@ def mae(real: np.ndarray, pred: np.ndarray) -> float:
 
 
 def directional_accuracy(real: np.ndarray, pred: np.ndarray) -> float:
-    """Fraction of forecasts whose sign matches the realised target's sign."""
+    """Fraction of forecasts whose sign matches the realised target's sign.
+
+    NaN when the realised target never changes sign. On a single-signed sample any
+    forecast with the right constant sign scores 1.0, which is not skill: ``rv_fwd`` is
+    strictly positive, so the metric is undefined there by construction. D13 records
+    the weaker version of the same problem on VRP, where the constant wins ``dir_acc``
+    by recovering the unconditional positive rate.
+    """
     mask = (real != 0) & (pred != 0)
     if not mask.any():
         return float("nan")
-    return float(np.mean(np.sign(real[mask]) == np.sign(pred[mask])))
+    signs = np.sign(real[mask])
+    if np.unique(signs).size < 2:
+        return float("nan")
+    return float(np.mean(signs == np.sign(pred[mask])))
 
 
 def qlike(rv_real: np.ndarray, rv_pred: np.ndarray) -> float:
@@ -53,11 +63,34 @@ def mincer_zarnowitz_r2(real: np.ndarray, pred: np.ndarray) -> tuple[float, floa
     return r2, float(coef[0]), float(coef[1])
 
 
+def hln_factor(n: int, lag: int) -> float:
+    """Harvey-Leybourne-Newbold (1997) small-sample correction factor for DM.
+
+    HLN eq. (9): ``DM* = [(n + 1 - 2h + h(h-1)/n) / n]^(1/2) * DM``, scored against
+    ``t(n-1)`` instead of ``N(0,1)``. ``h`` is the forecast horizon in steps; an
+    h-step-ahead forecast error is MA(h-1), so ``h = lag + 1`` for our HAC truncation
+    and ``h = 1`` recovers the plain ``sqrt((n-1)/n)`` shrink.
+    Harvey, D., Leybourne, S. & Newbold, P. (1997), "Testing the equality of
+    prediction mean squared errors", International Journal of Forecasting 13(2),
+    281-291. Cross-checked against R forecast::dm.test (R/DM2.R):
+    ``k <- ((n + 1 - 2 * h + (h / n) * (h - 1)) / n)^(1 / 2)``, p from
+    ``pt(..., df = n - 1)``.
+    """
+    h = lag + 1
+    inner = (n + 1 - 2 * h + h * (h - 1) / n) / n
+    #h > (n+1)/2 drives the factor imaginary; the sample is too short for the test
+    return float(np.sqrt(inner)) if inner > 0 else float("nan")
+
+
 def diebold_mariano(err_a: pd.Series, err_b: pd.Series,
-                    lag: int = 0) -> tuple[float, float]:
+                    lag: int = 0, hln: bool = True) -> tuple[float, float]:
     """Diebold-Mariano test on two aligned per-date loss series.
 
     Returns ``(stat, p_value)``; ``stat > 0`` means model A has the larger loss.
+    ``hln=True`` applies the HLN small-sample correction and scores against
+    ``t(n-1)``; ``hln=False`` is the uncorrected normal-distribution convention every
+    result recorded before D56 used, kept so tools/compare_dm_conventions.py can price
+    the change rather than assert it.
     """
     pair = pd.concat([err_a, err_b], axis=1).dropna()
     diff = (pair.iloc[:, 0] - pair.iloc[:, 1]).to_numpy()
@@ -72,8 +105,13 @@ def diebold_mariano(err_a: pd.Series, err_b: pd.Series,
     if var <= 0:
         return float("nan"), float("nan")
     stat = diff.mean() / np.sqrt(var / n)
-    p_value = 2.0 * (1.0 - stats.norm.cdf(abs(stat)))
-    return float(stat), float(p_value)
+    if not hln:
+        return float(stat), float(2.0 * (1.0 - stats.norm.cdf(abs(stat))))
+    factor = hln_factor(n, lag)
+    if not np.isfinite(factor):
+        return float("nan"), float("nan")
+    stat *= factor
+    return float(stat), float(2.0 * stats.t.cdf(-abs(stat), df=n - 1))
 
 
 def r2_against(real: np.ndarray, pred: np.ndarray, benchmark: float) -> float:
@@ -128,4 +166,16 @@ def evaluate(split: Split, pred: pd.Series,
 def squared_errors(split: Split, pred: pd.Series) -> pd.Series:
     """Per-date squared error in target space, for Diebold-Mariano comparisons."""
     frame = pd.concat({"real": split.target, "pred": pred}, axis=1).dropna()
+    return (frame["real"] - frame["pred"]) ** 2
+
+
+def squared_errors_rv(split: Split, pred: pd.Series) -> pd.Series:
+    """Per-date squared error in forward-vol space.
+
+    The headline metric is r2_rv, so a DM run on target-space errors is testing a
+    different loss from the one being reported. The target<->rv map is nonlinear
+    (vvrp squares it), so the two can rank models differently; both are reported.
+    """
+    frame = pd.concat({"real": split.rv_fwd, "pred": split.to_rv_fwd(pred)},
+                      axis=1).dropna()
     return (frame["real"] - frame["pred"]) ** 2

@@ -23,6 +23,12 @@ EXCLUDED_FEATURES: tuple[str, ...] = ("spx_logret", "vix_logret", "skew", "ts_sl
 #not the same network either way, see models/snn.py
 ALGORITHMS: tuple[str, ...] = ("eventprop", "eprop")
 
+#rv_fwd is the leg-free arm Contribution #3 needs: a price-only model scored on a VRP
+#target still meets the IV leg through the target itself and through to_target.
+#rvrp_winsor is the variant the proposal specifies, clipped at the train 1st/99th
+#percentiles by the assembler; it shares rvrp's target<->rv_fwd map.
+TARGETS: tuple[str, ...] = ("vrp", "rvrp", "rvrp_winsor", "vvrp", "rv_fwd")
+
 
 @dataclass(frozen=True)
 class ExperimentConfig:
@@ -30,7 +36,7 @@ class ExperimentConfig:
 
     repo_root: Path = _REPO_ROOT
     horizon: str = "weekly"            #weekly | monthly
-    target: str = "vrp"               #vrp | rvrp | vvrp (variance space)
+    target: str = "vrp"               #vrp | rvrp | vvrp (variance space) | rv_fwd
     iv_leg: str = "vix9d"             #vix | vix9d (vix9d is weekly only, 2011+)
     feature_set: str = "options+price"  #options+price | price-only | options+price+surface
     model: str = "har_rv"
@@ -58,6 +64,9 @@ class ExperimentConfig:
         if self.algorithm not in ALGORITHMS:
             raise ValueError(f"unknown algorithm {self.algorithm!r}, "
                              f"expected one of {sorted(ALGORITHMS)}")
+        if self.target not in TARGETS:
+            raise ValueError(f"unknown target {self.target!r}, "
+                             f"expected one of {sorted(TARGETS)}")
 
     @classmethod
     def load(cls, **overrides: object) -> "ExperimentConfig":
@@ -74,7 +83,19 @@ class ExperimentConfig:
 
     @property
     def target_column(self) -> str:
-        """Realised target column to evaluate against, e.g. ``vrp_vix9d``."""
+        """Realised target column to evaluate against, e.g. ``vrp_vix9d``.
+
+        ``rv_fwd`` is leg-independent, so it is the one target that does not take the
+        leg suffix. It is still *sampled* on the leg (see dataset.split), which keeps
+        it comparable with the VRP arms rather than silently gaining 1990-2010.
+
+        ``rvrp_winsor`` carries its suffix after the leg, matching the twin column
+        ``assembler._winsorise`` writes.
+        """
+        if self.target == "rv_fwd":
+            return "rv_fwd"
+        if self.target == "rvrp_winsor":
+            return f"rvrp_{self.iv_leg}_winsor"
         return f"{self.target}_{self.iv_leg}"
 
     @property

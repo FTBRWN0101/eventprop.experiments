@@ -32,26 +32,48 @@ class Split:
     rv_fwd: pd.Series        #realised forward vol (for QLIKE)
     iv: pd.Series            #implied-vol leg level at t
     denom: pd.Series         #smoothed IV leg (rVRP denominator)
-    target_kind: str         #"vrp" | "rvrp" | "vvrp"
+    target_kind: str         #"vrp" | "rvrp" | "rvrp_winsor" | "vvrp" | "rv_fwd"
     horizon_days: int
 
+    #both share the premium/denom map; winsorising clips the realised series, not the map
+    _RVRP_KINDS = ("rvrp", "rvrp_winsor")
+
     def to_target(self, rv_fwd_hat: pd.Series) -> pd.Series:
-        """Convert a forward-vol forecast into a VRP/rVRP/vVRP forecast (RV-based models)."""
+        """Convert a forward-vol forecast into the configured target space.
+
+        Identity for ``rv_fwd``: that is the point of the arm, since every other
+        target routes the IV leg into the prediction here.
+        """
+        if self.target_kind == "rv_fwd":
+            return rv_fwd_hat
         if self.target_kind == "vvrp":
             return self.iv**2 - rv_fwd_hat**2
         premium = self.iv - rv_fwd_hat
         if self.target_kind == "vrp":
             return premium
-        return premium / self.denom
+        if self.target_kind in self._RVRP_KINDS:
+            return premium / self.denom
+        raise ValueError(f"no target map for target_kind={self.target_kind!r}")
 
     def to_rv_fwd(self, target_hat: pd.Series) -> pd.Series:
-        """Invert a VRP/rVRP/vVRP forecast back to a forward-vol forecast (for QLIKE)."""
+        """Invert a target-space forecast back to forward vol (for QLIKE).
+
+        Exact for every kind except ``rvrp_winsor``, where the realised series was
+        clipped at the train bounds. On a clipped row the inverse returns the vol
+        implied by the *clipped* value, not the vol that was realised, so ``r2_rv``
+        and QLIKE carry that error. ``run_experiment`` reports how many test rows
+        bind so the size is visible rather than assumed.
+        """
+        if self.target_kind == "rv_fwd":
+            return target_hat
         if self.target_kind == "vvrp":
             #a forecast can imply negative variance; clip so the sqrt stays real
             return np.sqrt(np.maximum(self.iv**2 - target_hat, 0.0))
         if self.target_kind == "vrp":
             return self.iv - target_hat
-        return self.iv - target_hat * self.denom
+        if self.target_kind in self._RVRP_KINDS:
+            return self.iv - target_hat * self.denom
+        raise ValueError(f"no inverse map for target_kind={self.target_kind!r}")
 
 
 class VrpDataset:
