@@ -27,6 +27,19 @@ class Forecaster(ABC):
     def __init__(self, config: ExperimentConfig) -> None:
         self.config = config
 
+    @property
+    def fit_tolerance_days(self) -> int:
+        """Trading days this model's fitted range may sit inside the sample by (D81).
+
+        Zero for a model that fits every training row. A sequence model cannot form
+        a window until it holds L days of history, and a trainer wanting full batches
+        drops the remainder, so its fitted range is a strict subset of the sample it
+        was handed. That is a handicap rather than an advantage, so the DM guard
+        admits it instead of refusing the comparison. It is not a licence to fit a
+        different sample: a range reaching *beyond* the other is refused at any size.
+        """
+        return 0
+
     @abstractmethod
     def fit(self, data: VrpDataset) -> None:
         """Fit the model on the training split of *data*."""

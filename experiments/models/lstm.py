@@ -29,6 +29,15 @@ class LstmForecaster(Forecaster):
     name = "lstm"
     description = "LSTM on standardised windows, final-timestep readout (direct target)"
 
+    @property
+    def fit_tolerance_days(self) -> int:
+        """Windowing only, in trading days (D81).
+
+        The first window ends L - 1 days after the sample starts. Unlike the SNN this
+        trainer takes a partial final batch, so nothing is lost at the other end.
+        """
+        return self.config.sequence_length
+
     def _build(self, num_features: int):
         import torch.nn as nn
 

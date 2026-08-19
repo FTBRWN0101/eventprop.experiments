@@ -47,7 +47,8 @@ def fit_predict(config: ExperimentConfig, model_names: list[str]) -> tuple[
         model.fit(data)
         predictions[name] = model.predict(data, "test")
         diag = {}
-        for attribute in ("fitted_range", "silent_neuron_fraction", "pinned_fraction"):
+        for attribute in ("fitted_range", "fit_tolerance_days",
+                          "silent_neuron_fraction", "pinned_fraction"):
             if hasattr(model, attribute):
                 diag[attribute] = getattr(model, attribute)
         if diag:
@@ -81,7 +82,8 @@ def run(config: ExperimentConfig, model_names: list[str]) -> tuple[
     #no arbitrary choice is being made. Every stat carries the HLN small-sample
     #correction and a t(n-1) p-value.
     suppressed = _add_dm_columns(results, list(predictions), errors, errors_rv,
-                                 max(config.horizon_days - 1, 0), diagnostics)
+                                 max(config.horizon_days - 1, 0), diagnostics,
+                                 data.daily("full").index)
     if suppressed:
         diagnostics["__dm_suppressed__"] = suppressed
     binding = _winsor_binding(data, config)
@@ -116,22 +118,82 @@ def _winsor_binding(data: VrpDataset, config: ExperimentConfig) -> dict | None:
             "fraction": fraction}
 
 
-def _fit_ranges_match(diagnostics: dict[str, dict], a: str, b: str) -> bool:
-    """True when two models report the same fitted date range.
+def _trading_gap(calendar: pd.DatetimeIndex, one: str, two: str) -> int:
+    """Trading days between two dates, counted on the panel's own calendar."""
+    positions = calendar.searchsorted([pd.Timestamp(one), pd.Timestamp(two)])
+    return int(abs(positions[1] - positions[0]))
 
-    Absent diagnostics count as matching: a model that reports no range is not
-    evidence of a mismatch, and refusing to test it would silence the baselines.
+
+def _samples_comparable(diagnostics: dict[str, dict], calendar: pd.DatetimeIndex,
+                        a: str, b: str) -> tuple[bool, str]:
+    """Whether a DM between *a* and *b* compares fits on the same sample (D81).
+
+    Returns ``(comparable, reason)``; *reason* is empty when comparable.
+
+    Identical ranges pass. So does a range sitting *inside* the other by no more than
+    the **inner** model's own declared allowance, because that is what windowing and
+    batch truncation do to a sequence model: they carve a subset out of the sample it
+    was given, which handicaps it rather than crediting it. The allowance is read from
+    the inner model on purpose. Taking the wider one's would let a model excuse the
+    extra data it holds, which inverts the rule.
+
+    A range reaching *beyond* the other fails at any size. har_rv_full starts in
+    1990 against har_rv's 2011, and that is the comparison the rule exists to stop.
+    A range differing by more than the allowance fails too, which is what catches a
+    model that quietly fitted a different sample: under ``--holdout-val``, garch
+    keeps 2017-2019 while har_rv loses it, and Option A would have waved that
+    through because both were *permitted* the same span.
+
+    Absent diagnostics count as matching. A model reporting no range is not evidence
+    of a mismatch, and refusing it would silence every baseline that reports none.
     """
     range_a = diagnostics.get(a, {}).get("fitted_range")
     range_b = diagnostics.get(b, {}).get("fitted_range")
     if range_a is None or range_b is None:
+        return True, ""
+    start_a, end_a = str(range_a[0]), str(range_a[1])
+    start_b, end_b = str(range_b[0]), str(range_b[1])
+    if (start_a, end_a) == (start_b, end_b):
+        return True, ""
+
+    #one range must sit inside the other; a straddle is two different samples
+    inside_a = start_a >= start_b and end_a <= end_b
+    inside_b = start_b >= start_a and end_b <= end_a
+    if not (inside_a or inside_b):
+        return False, (f"fitted {range_a} against {range_b}, neither inside the other")
+
+    #the allowance belongs to whichever model sits inside, because it is that model's
+    #own windowing that carved the subset. Taking the wider model's tolerance would
+    #let it excuse the extra data it holds, which is the opposite of the rule.
+    inner = a if inside_a else b
+    allowance = diagnostics.get(inner, {}).get("fit_tolerance_days", 0)
+    start_gap = _trading_gap(calendar, start_a, start_b)
+    end_gap = _trading_gap(calendar, end_a, end_b)
+    if max(start_gap, end_gap) > allowance:
+        return False, (f"fitted {range_a} against {range_b}, inside by "
+                       f"{start_gap}/{end_gap} trading days against an allowance "
+                       f"of {allowance}")
+    return True, ""
+
+
+def _scored_dates_match(errors: dict[str, object], a: str, b: str) -> bool:
+    """True when two models were scored on identical dates.
+
+    The project rule is "fitted on identical dates and scored on identical dates".
+    Only the first clause was ever enforced, which D77 recorded as shaky. The error
+    series carry the scored index, so this is the second clause.
+    """
+    index_a = getattr(errors.get(a), "index", None)
+    index_b = getattr(errors.get(b), "index", None)
+    if index_a is None or index_b is None:
         return True
-    return list(range_a) == list(range_b)
+    return len(index_a) == len(index_b) and bool((index_a == index_b).all())
 
 
 def _add_dm_columns(results: dict[str, dict[str, float]], model_names: list[str],
                     errors: dict[str, object], errors_rv: dict[str, object],
-                    lag_h: int, diagnostics: dict[str, dict]) -> dict[str, list[str]]:
+                    lag_h: int, diagnostics: dict[str, dict],
+                    calendar: pd.DatetimeIndex) -> dict[str, list[str]]:
     """Write the DM stat/p column pairs onto *results*, in place.
 
     Two benchmarks x two error spaces x two lags, so sixteen columns per model.
@@ -142,6 +204,9 @@ def _add_dm_columns(results: dict[str, dict[str, float]], model_names: list[str]
     ``_full`` arms. Those cells are now NaN with a warning. Suppressing rather than
     raising keeps ``har_rv,har_rv_full`` runnable, which is the whole point of those
     arms: they price the D27 restriction, they are not candidates for a DM.
+
+    Both clauses of the rule are checked: the fit samples must be comparable per
+    D81, and the scored dates must be identical.
     """
     lags = {"lag0": 0, "lagh": lag_h}
     suppressed: dict[str, list[str]] = {}
@@ -149,15 +214,16 @@ def _add_dm_columns(results: dict[str, dict[str, float]], model_names: list[str]
         if benchmark not in errors:
             continue
         for name in model_names:
-            comparable = _fit_ranges_match(diagnostics, benchmark, name)
+            comparable, reason = _samples_comparable(
+                diagnostics, calendar, benchmark, name)
+            if comparable and not _scored_dates_match(errors, benchmark, name):
+                comparable, reason = False, "scored on different dates"
             if not comparable:
                 suppressed.setdefault(benchmark, []).append(name)
                 logger.warning(
-                    "[dm] %s vs %s suppressed: fitted %s against %s. A DM between "
-                    "models fitted on different samples is not a valid comparison.",
-                    name, benchmark,
-                    diagnostics.get(name, {}).get("fitted_range"),
-                    diagnostics.get(benchmark, {}).get("fitted_range"))
+                    "[dm] %s vs %s suppressed: %s. A DM between models fitted or "
+                    "scored on different samples is not a valid comparison.",
+                    name, benchmark, reason)
             for space, series in (("target", errors), ("rv", errors_rv)):
                 for suffix, lag in lags.items():
                     if name == benchmark or not comparable:

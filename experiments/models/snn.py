@@ -180,6 +180,16 @@ class SnnForecaster(Forecaster):
     name = "snn"
     description = "mlGeNN recurrent LIF + EventProp, pluggable encoding (config.encoding)"
 
+    @property
+    def fit_tolerance_days(self) -> int:
+        """Windowing plus the dropped trailing batch, in trading days (D81).
+
+        The first window ends L - 1 days after the sample starts, and fit() truncates
+        to a whole number of batches for mlGeNN, so up to BATCH_SIZE - 1 windows go
+        at the end. Both ends are rounded up, since the guard wants an upper bound.
+        """
+        return self.config.sequence_length + BATCH_SIZE
+
     def _get_encoder(self) -> Encoder:
         ENCODERS.discover(_ENCODERS_DIR, "encoders")
         cls = ENCODERS.get(self.config.encoding)
