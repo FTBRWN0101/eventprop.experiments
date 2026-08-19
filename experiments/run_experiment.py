@@ -281,8 +281,11 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
     parser.add_argument("--test-sampling", default="nonoverlap",
                         choices=["nonoverlap", "daily"])
     parser.add_argument("--encoding", default="rate",
-                        choices=["rate", "population", "delta", "delta_adaptive"],
-                        help="Spike encoding, SNN only.")
+                        choices=["rate", "latency", "population", "delta",
+                                 "delta_adaptive"],
+                        help="Spike encoding, SNN only. The first four are the "
+                             "proposal's four strategies; delta_adaptive is the "
+                             "primary hypothesis and delta its static control.")
     parser.add_argument("--algorithm", default="eventprop",
                         choices=list(ALGORITHMS),
                         help="SNN training algorithm. The two arms are not the same network, "
