@@ -32,11 +32,19 @@ class GarchForecaster(Forecaster):
         #last_obs is what keeps them out of the fit.
         if self.restrict_sample:
             returns = returns.loc[returns.index >= data.fit_start()]
-        fit_returns = returns.loc[returns.index < self._first_test]
+        #P2-2: the fit is bounded by the end of the TRAIN split, not by the first test
+        #date. Under --holdout-val the train split stops in 2016 while the test split
+        #still begins in 2020, so keying on the test date fed garch the three
+        #validation years that har_rv and the sequence models lose. Without
+        #--holdout-val no dates sit between the two bounds, so this changes nothing.
+        train_end = data.daily("train").index.max()
+        later = returns.index[returns.index > train_end]
+        self._last_obs = later.min() if len(later) else self._first_test
+        fit_returns = returns.loc[returns.index <= train_end]
         self.fitted_range = (str(fit_returns.index.min().date()),
                              str(fit_returns.index.max().date()))
         model = arch_model(returns, mean="Constant", vol="GARCH", p=1, q=1, dist="normal")
-        self._result = model.fit(last_obs=self._first_test, disp="off")
+        self._result = model.fit(last_obs=self._last_obs, disp="off")
 
     def predict(self, data: VrpDataset, split: str) -> pd.Series:
         view = data.split(split)
