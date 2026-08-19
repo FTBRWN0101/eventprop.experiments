@@ -111,14 +111,29 @@ class VrpDataset:
         return self.daily("full")
 
     def feature_columns(self, frame: pd.DataFrame) -> list[str]:
-        """Model-input columns for the configured feature set."""
+        """Model-input columns for the configured feature set.
+
+        ``config.restore_features`` re-admits columns that ``EXCLUDED_FEATURES``
+        drops, and ``config.drop_features`` removes columns the set would serve.
+        Drop wins over restore, so a leave-one-out arm can name the same column in
+        both without ambiguity.
+        """
+        cfg = self.config
+        excluded = set(EXCLUDED_FEATURES) - set(cfg.restore_features)
         columns = [c for c in frame.columns
-                   if not _is_target_column(c) and c not in EXCLUDED_FEATURES]
-        if self.config.feature_set == "price-only":
-            return [c for c in columns if c in PRICE_ONLY_FEATURES]
-        if self.config.feature_set == "options+price":
-            return [c for c in columns if c not in SURFACE_FEATURES]
-        return columns
+                   if not _is_target_column(c) and c not in excluded]
+        if cfg.feature_set == "price-only":
+            columns = [c for c in columns if c in PRICE_ONLY_FEATURES]
+        elif cfg.feature_set == "options+price":
+            columns = [c for c in columns if c not in SURFACE_FEATURES]
+        #a drop that matches nothing would silently report "this feature does not
+        #matter" for a column the arm never served
+        missing = set(cfg.drop_features) - set(columns)
+        if missing:
+            raise ValueError(
+                f"drop_features names {sorted(missing)}, which the {cfg.feature_set!r} "
+                f"set does not serve. Available: {sorted(columns)}")
+        return [c for c in columns if c not in set(cfg.drop_features)]
 
     def fit_start(self) -> pd.Timestamp:
         """First date any model may fit from (D27).

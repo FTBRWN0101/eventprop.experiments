@@ -301,7 +301,17 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
     parser.add_argument("--delta-multiplier", type=float, default=1.0)
     parser.add_argument("--holdout-val", action="store_true",
                         help="Hold out 2017-2019 from train as a validation split.")
+    parser.add_argument("--drop-features", default="",
+                        help="Comma-separated feature columns to withhold, for the "
+                             "per-signal ablation.")
+    parser.add_argument("--restore-features", default="",
+                        help="Comma-separated columns to re-admit from "
+                             "EXCLUDED_FEATURES, e.g. skew,ts_slope.")
     return parser.parse_args(argv)
+
+
+def _split_csv(value: str) -> tuple[str, ...]:
+    return tuple(item.strip() for item in value.split(",") if item.strip())
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -314,7 +324,9 @@ def main(argv: list[str] | None = None) -> None:
         input_window=args.input_window,
         sample_start=args.sample_start, num_epochs=args.num_epochs,
         learning_rate=args.learning_rate, delta_multiplier=args.delta_multiplier,
-        holdout_val=args.holdout_val)
+        holdout_val=args.holdout_val,
+        drop_features=_split_csv(args.drop_features),
+        restore_features=_split_csv(args.restore_features))
     results, predictions, diagnostics, actual = run(
         config, [m.strip() for m in args.models.split(",") if m.strip()])
     _print_table(config, results, diagnostics)

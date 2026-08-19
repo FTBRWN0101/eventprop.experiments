@@ -11,7 +11,9 @@ _REPO_ROOT = Path(__file__).resolve().parents[2]
 #horizon -> realised-vol window in trading days
 HORIZON_DAYS: dict[str, int] = {"weekly": 5, "monthly": 21}
 
-#no options inputs, for the ablation
+#no options inputs, for the ablation. NOTE: spx_logret is also in EXCLUDED_FEATURES and
+#exclusion wins, so this arm actually serves 3 columns, not 4. Listed anyway so clearing
+#EXCLUDED_FEATURES restores the original arm.
 PRICE_ONLY_FEATURES: tuple[str, ...] = ("rv_1", "rv_5", "rv_21", "spx_logret")
 
 #own arm, not folded into options+price: the surface has gaps and would reshape the sample
@@ -50,6 +52,12 @@ class ExperimentConfig:
     sample_start: str | None = None   #ISO start date, same for every split and model
     delta_multiplier: float = 1.0     #delta encoder threshold multiplier
     holdout_val: bool = False         #carve 2017-2019 out of train as a validation set
+    #per-signal ablation. drop_features removes served columns; restore_features
+    #re-admits ones EXCLUDED_FEATURES drops, which is how skew and ts_slope get
+    #measured without putting them back in every headline run. Tuples, so the
+    #config stays hashable and frozen.
+    drop_features: tuple[str, ...] = ()
+    restore_features: tuple[str, ...] = ()
 
     annualisation: int = 252
     rvrp_smooth_window: int = 5
@@ -67,6 +75,11 @@ class ExperimentConfig:
         if self.target not in TARGETS:
             raise ValueError(f"unknown target {self.target!r}, "
                              f"expected one of {sorted(TARGETS)}")
+        #restoring something that was never excluded is a typo, not a no-op
+        unknown = set(self.restore_features) - set(EXCLUDED_FEATURES)
+        if unknown:
+            raise ValueError(f"restore_features names {sorted(unknown)}, which are not "
+                             f"in EXCLUDED_FEATURES {sorted(EXCLUDED_FEATURES)}")
 
     @classmethod
     def load(cls, **overrides: object) -> "ExperimentConfig":
