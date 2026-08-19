@@ -120,6 +120,16 @@ class VrpDataset:
             return [c for c in columns if c not in SURFACE_FEATURES]
         return columns
 
+    def fit_start(self) -> pd.Timestamp:
+        """First date any model may fit from (D27).
+
+        The sequence models are gated by the target column, so on the vix9d leg they
+        start in 2011. har_rv and garch read the raw daily frame and would otherwise
+        reach back to 1990, which makes the DM test compare models fitted on different
+        samples. Every model clips to this date instead.
+        """
+        return self.split("train").target.index.min()
+
     def split(self, name: str) -> Split:
         """Build the aligned :class:`Split` for *name*, sampled per the config."""
         cfg = self.config
