@@ -4,6 +4,22 @@ Two flags, both off by default so delta stays the static control arm:
 accumulate carries the sub-threshold residual, adaptive takes the threshold
 from a rolling std instead of one global scalar.
 
+These are not ad-hoc variants. In the temporal-contrast taxonomy of Petro, Kasabov &
+Kiss (IEEE TNNLS 2020) the two arms are named published methods:
+
+* ``accumulate=False`` is threshold-based representation (TBR) -- fire on
+  ``|x[k] - x[k-1]| > theta``, and discard whatever falls short.
+* ``accumulate=True`` is step-forward (SF) -- keep a baseline ``B``, fire when
+  ``x[k]`` leaves ``B +/- theta``, then move ``B`` by ``+/-theta``. Subtracting the
+  threshold from a running accumulator is algebraically the same thing, since the
+  accumulator holds ``x[k] - B``.
+
+That paper found SF the most robust and easiest to optimise of the four it compared,
+which is the prior for expecting the accumulator to win here. It also sets the
+calibration convention used in ``tools/calibrate_encoder.py``: pick the threshold by
+the reconstruction error between the original and the spike-reconstructed signal
+(SNR), not by downstream task score.
+
 Takes raw features, not the rank-uniform ones.
 """
 
@@ -60,6 +76,13 @@ class DeltaEncoder(Encoder):
 
         Returns ``(up, down, residual)``. One spike per step, so a big move drains
         over later steps rather than being lost.
+
+        The comparison is ``>=``, not ``>``. Under a strict inequality a bucket holding
+        exactly one threshold can never discharge, so a signal rising by exactly theta
+        per step tracks one threshold behind for ever and a jump of exactly n*theta
+        strands its last unit permanently. On float data the two rules differ only on
+        exact equality and the spike counts are identical, but ``>=`` is what makes
+        "deferred, never destroyed" true rather than nearly true.
         """
         up = np.zeros(diffs.shape, dtype=bool)
         down = np.zeros(diffs.shape, dtype=bool)
@@ -67,22 +90,33 @@ class DeltaEncoder(Encoder):
         for k in range(diffs.shape[1]):
             acc = acc + diffs[:, k]
             step = theta[:, k]
-            fire_up, fire_down = acc > step, acc < -step
+            fire_up, fire_down = acc >= step, acc <= -step
             #subtract, do not reset: the overshoot is real movement and stays in the bucket
             acc = np.where(fire_up, acc - step, np.where(fire_down, acc + step, acc))
             up[:, k], down[:, k] = fire_up, fire_down
         return up, down, acc
 
-    def _events(self, X: np.ndarray, scale: np.ndarray | None = None
-                ) -> tuple[list[np.ndarray], list[np.ndarray], int]:
-        """Pure-numpy (times, ids) event arrays per example. No mlGeNN dependency."""
-        n, _, f = X.shape
+    def spike_masks(self, X: np.ndarray, scale: np.ndarray | None = None
+                    ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        """``(up, down, theta)`` aligned to ``diffs``, i.e. shape ``[N, T-1, F]``.
+
+        Public because the reconstruction diagnostics need the per-step threshold that
+        each spike stands for, not just the event times.
+        """
         diffs = np.diff(X, axis=1)  #diffs[:, k] = X[:, k+1] - X[:, k]
         theta = self._thresholds(X, scale)
         if self.accumulate:
             up, down, _ = self._accumulated(diffs, theta)
         else:
-            up, down = diffs > theta, diffs < -theta
+            #>= to match the accumulator's rule; on float data they never differ
+            up, down = diffs >= theta, diffs <= -theta
+        return up, down, theta
+
+    def _events(self, X: np.ndarray, scale: np.ndarray | None = None
+                ) -> tuple[list[np.ndarray], list[np.ndarray], int]:
+        """Pure-numpy (times, ids) event arrays per example. No mlGeNN dependency."""
+        n, _, f = X.shape
+        up, down, _ = self.spike_masks(X, scale)
 
         times_list, ids_list = [], []
         for i in range(n):
