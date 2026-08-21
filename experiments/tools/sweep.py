@@ -111,6 +111,8 @@ def result_dir(*streams: str) -> str:
     format carrying a timestamp or level prefix does not silently break this again.
     """
     for stream in streams:
+        if not stream:
+            continue
         for line in reversed(stream.splitlines()):
             _, marker, tail = line.partition(RESULT_MARKER)
             if marker:
@@ -124,11 +126,19 @@ def run_arm(arm: Arm, command: list[str], timeout: float | None) -> dict:
     logger.debug("[sweep] %s", " ".join(command))
     started = time.time()
     try:
+        #decode explicitly rather than through the platform default. The GeNN/MSVC
+        #toolchain emits bytes cp1252 cannot map, which killed subprocess's reader
+        #thread and handed back stdout=None; errors="replace" makes decoding total,
+        #and the only thing read out of these streams is a marker line.
         completed = subprocess.run(command, capture_output=True, text=True,
+                                   encoding="utf-8", errors="replace",
                                    timeout=timeout)
         code, stdout, stderr = completed.returncode, completed.stdout, completed.stderr
     except subprocess.TimeoutExpired:
         code, stdout, stderr = -1, "", f"timed out after {timeout}s"
+    #a stream can still arrive as None if the child is killed mid-read; normalise once
+    #here so neither result_dir nor the stderr tail below has to defend itself
+    stdout, stderr = stdout or "", stderr or ""
     elapsed = time.time() - started
 
     record = {"key": arm.key, **asdict(arm), "returncode": code,

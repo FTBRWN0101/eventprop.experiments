@@ -1,10 +1,13 @@
 """The sweep runner: grid shape, resume, and the safeguard override.
 
-No subprocess is ever started here. run_arm is the only thing that shells out and it is
-monkeypatched, so these run in the plain .venv in milliseconds.
+run_arm is the only thing that shells out, and it is monkeypatched everywhere except in
+the decode regression below, which has to start a real subprocess because the bug it
+covers lives in how subprocess decodes the child's stream. That one runs a few-line
+Python script, so the suite still finishes in the plain .venv in milliseconds.
 """
 
 import json
+import sys
 
 import pytest
 
@@ -177,3 +180,29 @@ def test_run_arm_records_a_timeout_rather_than_raising(monkeypatch):
 def test_both_sequence_lengths_are_swept(window):
     """L is a swept axis, not a fixed choice, so latency is not judged at L=5 alone."""
     assert any(a.input_window == window for a in sweep.build_grid())
+
+
+def test_result_dir_tolerates_a_stream_that_is_none():
+    """A killed child can hand back None instead of a string; that must not crash."""
+    assert sweep.result_dir(None, None) == ""
+    assert sweep.result_dir(None, sweep.RESULT_MARKER + "C:/runs/x") == "C:/runs/x"
+
+
+def test_run_arm_survives_output_the_platform_codec_cannot_decode(tmp_path):
+    """GeNN's toolchain emits bytes cp1252 cannot map. Decoding must not kill the arm.
+
+    Regression: subprocess's reader thread raised UnicodeDecodeError, stdout came back
+    as None, and the sweep died on arm 1 of 48 with that arm's run already finished.
+    """
+    script = tmp_path / "emit.py"
+    script.write_text(
+        "import sys\n"
+        "sys.stdout.buffer.write(b'\\x8f\\x9d ready\\n')\n"
+        "sys.stdout.write('" + sweep.RESULT_MARKER + "C:/runs/ok\\n')\n",
+        encoding="utf8")
+    arm = sweep.Arm(encoding="rate", algorithm="eventprop", seed=1, input_window=5)
+
+    record = sweep.run_arm(arm, [sys.executable, str(script)], timeout=60)
+
+    assert record["returncode"] == 0
+    assert record["run_dir"] == "C:/runs/ok"
