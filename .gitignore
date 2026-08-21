@@ -30,6 +30,7 @@ writeup/
 
 #run artifacts
 experiments/results/
+*.log
 
 #documents
 *.pdf
