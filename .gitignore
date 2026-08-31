@@ -4,13 +4,13 @@ __pycache__/
 .venv/
 
 #credentials
-data-download/.env
+src/data_download/.env
 
 #fetched data, rebuild with fetch_all.py then build_vrp.py
 data-save/
 
 #snn training artifacts
-experiments/.snn_checkpoints/
+artifacts/
 *_CODE/
 
 #local GeNN builds, see experiments/SNN_ENV_SETUP.md
@@ -27,10 +27,15 @@ docs/
 
 #dissertation write-up, kept local
 writeup/
+dissertation/
 
 #run artifacts
-experiments/results/
 *.log
+logs/
+
+#checkpoint backups, taken by hand before risky work. The live directory is already
+#ignored above; these are dated copies of it and just as regenerable.
+experiments/.snn_checkpoints_backup_*/
 
 #documents
 *.pdf
