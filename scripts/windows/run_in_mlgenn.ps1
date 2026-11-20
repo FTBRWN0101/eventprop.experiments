@@ -15,7 +15,13 @@ trap {
 
 $scriptDirectory = Split-Path -Parent $PSCommandPath
 $repo = (Resolve-Path (Join-Path $scriptDirectory '..\..')).Path
-$workingDirectory = Join-Path $repo 'artifacts\genn\live'
+$defaultBuildDirectory = Join-Path $repo 'artifacts\genn\live'
+$workingDirectory = if ([string]::IsNullOrWhiteSpace($env:GENN_BUILD)) {
+    $defaultBuildDirectory
+}
+else {
+    [System.IO.Path]::GetFullPath($env:GENN_BUILD)
+}
 $python = 'C:\Users\user\miniconda3\envs\mlgenn\python.exe'
 $vcvarsAll = 'C:\Program Files\Microsoft Visual Studio\18\Community\VC\Auxiliary\Build\vcvarsall.bat'
 
@@ -27,6 +33,9 @@ if (-not (Test-Path -LiteralPath $vcvarsAll -PathType Leaf)) {
 }
 if (-not (Test-Path -LiteralPath $workingDirectory -PathType Container)) {
     New-Item -ItemType Directory -Force $workingDirectory | Out-Null
+}
+if (-not $workingDirectory.StartsWith($repo, [System.StringComparison]::OrdinalIgnoreCase)) {
+    throw "GENN_BUILD must remain inside the repository: $workingDirectory"
 }
 
 # vcvarsall exposes both PATH and Path here. Keep the candidate that contains the
@@ -65,7 +74,18 @@ if ([string]::IsNullOrWhiteSpace($visualStudioPath)) {
     throw 'vcvarsall did not provide a PATH value'
 }
 
+$compilerDirectory = @($visualStudioPath -split ';' | Where-Object {
+    -not [string]::IsNullOrWhiteSpace($_) -and
+    (Test-Path -LiteralPath (Join-Path $_ 'cl.exe') -PathType Leaf)
+}) | Select-Object -First 1
+if ($null -eq $compilerDirectory) {
+    throw 'vcvarsall did not provide a usable cl.exe host compiler'
+}
+
 $environment['Path'] = $visualStudioPath
+# CUDA 13.3 does not reliably discover cl.exe from a PowerShell-launched child,
+# even when vcvarsall has populated PATH. Point nvcc at the exact compiler instead.
+$environment['CUDAHOSTCXX'] = Join-Path $compilerDirectory 'cl.exe'
 $environment['DISTUTILS_USE_SDK'] = '1'
 
 # The linker needs LIB, LIBPATH and INCLUDE as well as the compiler on PATH.
@@ -74,5 +94,19 @@ foreach ($entry in $environment.GetEnumerator()) {
     [System.Environment]::SetEnvironmentVariable($entry.Key, $entry.Value, 'Process')
 }
 Set-Location -LiteralPath $workingDirectory
-& $python (Resolve-Path -LiteralPath $ScriptPath).Path @ScriptArguments
+$resolvedScript = (Resolve-Path -LiteralPath $ScriptPath).Path
+$quoteForCmd = {
+    param([string]$Value)
+    '"' + $Value.Replace('"', '""') + '"'
+}
+$command = @(
+    (& $quoteForCmd $python)
+    (& $quoteForCmd $resolvedScript)
+    @($ScriptArguments | ForEach-Object { & $quoteForCmd $_ })
+) -join ' '
+
+# cmd.exe receives the process environment that vcvarsall configured above. A direct
+# PowerShell executable launch on this host restores Python's original PATH, which
+# leaves nvcc unable to locate its MSVC host compiler.
+& cmd.exe /d /s /c $command
 exit $LASTEXITCODE

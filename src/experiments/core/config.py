@@ -21,6 +21,7 @@ ENCODINGS: tuple[str, ...] = (
     "rate", "latency", "population", "delta", "delta_adaptive", "learnt_delta",
     "learnt_conv")
 TEST_SAMPLINGS: tuple[str, ...] = ("nonoverlap", "daily")
+EVALUATION_SPLITS: tuple[str, ...] = ("val", "test")
 
 #no options inputs, for the ablation. NOTE: spx_logret is also in EXCLUDED_FEATURES and
 #exclusion wins, so this arm actually serves 3 columns, not 4. Listed anyway so clearing
@@ -84,6 +85,7 @@ class ExperimentConfig:
     encoding: str = "rate"            #used by the SNN only
     algorithm: str = "eventprop"      #eventprop | eprop; SNN only
     test_sampling: str = "nonoverlap"  #nonoverlap | daily
+    evaluation_split: str = "test"      #val while selecting; final test after selection
     seed: int = 1                     #0 means unseeded to GeNN
     input_window: int | None = None   #sequence length T; None ties it to the horizon
     num_epochs: int = 50
@@ -167,6 +169,7 @@ class ExperimentConfig:
         _require_choice("feature_set", self.feature_set, FEATURE_SETS)
         _require_choice("encoding", self.encoding, ENCODINGS)
         _require_choice("test_sampling", self.test_sampling, TEST_SAMPLINGS)
+        _require_choice("evaluation_split", self.evaluation_split, EVALUATION_SPLITS)
         _require_choice("target", self.target, TARGETS)
         if self.horizon == "monthly" and self.iv_leg == "vix9d":
             raise ValueError("the monthly panel has no VIX9D leg, "
@@ -260,6 +263,9 @@ class ExperimentConfig:
         if self.readout_window and self.algorithm != "eventprop":
             raise ValueError(f"the readout window is an EventProp readout, "
                              f"it does nothing under algorithm={self.algorithm!r}")
+        if self.evaluation_split == "val" and not self.holdout_val:
+            raise ValueError("evaluation_split='val' requires holdout_val=True so the "
+                             "validation dates were not used for fitting")
 
     @classmethod
     def load(cls, **overrides: object) -> "ExperimentConfig":

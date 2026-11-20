@@ -97,7 +97,10 @@ def arm_command(arm: Arm, python: str, target: str, iv_leg: str,
                 checkpoint_epochs: int | None = None,
                 num_hidden: int | None = None,
                 allow_silent: bool = False,
-                campaign_id: str | None = None) -> list[str]:
+                campaign_id: str | None = None,
+                holdout_val: bool = False,
+                evaluation_split: str = "test",
+                loss_shaping: bool = False) -> list[str]:
     """The exact argv for one arm, including the safeguard override where it applies.
 
     ``readout_window`` is the D85 fraction, or None to leave the loss integrated over
@@ -123,6 +126,10 @@ def arm_command(arm: Arm, python: str, target: str, iv_leg: str,
                     "--readout-window-fraction", str(readout_window)]
     if reset_synapses:
         command.append("--reset-synapses-between-trials")
+    #tau is left unset, so snn.py uses the sequence length. config.py rejects the
+    #combination with e-prop on the host, before any GPU time is spent.
+    if loss_shaping:
+        command.append("--loss-shaping")
     #both default to None so an unswept arm's argv is byte-for-byte what it always was
     if learning_rate is not None:
         command += ["--learning-rate", str(learning_rate)]
@@ -132,6 +139,9 @@ def arm_command(arm: Arm, python: str, target: str, iv_leg: str,
         command += ["--num-hidden", str(num_hidden)]
     if campaign_id is not None:
         command += ["--campaign-id", campaign_id]
+    if holdout_val:
+        command.append("--holdout-val")
+    command += ["--evaluation-split", evaluation_split]
     return command
 
 
@@ -271,6 +281,10 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
                         help="D85: score only this share of the trial, measured back "
                              "from the trial end, instead of the whole of it. "
                              "EventProp only, so pair it with --algorithms eventprop.")
+    parser.add_argument("--loss-shaping", action="store_true",
+                        help="Add the exponentially weighted membrane-potential integral "
+                             "to the EventProp adjoint drive. tau is left unset, so the "
+                             "sequence length is used. EventProp only.")
     parser.add_argument("--allow-silent-neurons", action="store_true",
                         help="Disable the silent-neuron abort for EVERY arm, not just "
                              f"{', '.join(ALLOW_SILENT_ENCODINGS)}. A rate sweep needs "
@@ -279,6 +293,10 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
     parser.add_argument("--campaign-id", default=None,
                         help="Record a campaign identifier in every child config and "
                              "namespace its mutable checkpoints.")
+    parser.add_argument("--holdout-val", action="store_true",
+                        help="Fit before 2017 and evaluate 2017-2019 validation dates.")
+    parser.add_argument("--evaluation-split", choices=("val", "test"), default="test",
+                        help="Split scored by every child. val requires --holdout-val.")
     parser.add_argument("--retry-failed", action="store_true",
                         help="Rerun arms the manifest records as failed.")
     parser.add_argument("--strict", action="store_true",
@@ -337,7 +355,8 @@ def main(argv: list[str] | None = None) -> int:
                               args.reset_synapses_between_trials,
                               args.learning_rate, args.checkpoint_epochs,
                               args.num_hidden, args.allow_silent_neurons,
-                              args.campaign_id)
+                              args.campaign_id, args.holdout_val,
+                              args.evaluation_split, args.loss_shaping)
         logger.info("[sweep] arm %d of %d", index, len(todo))
         records[arm.key] = run_arm(arm, command, args.timeout)
         save_manifest(manifest_path, records)

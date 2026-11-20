@@ -13,6 +13,13 @@ def default_data():
     return VrpDataset(ExperimentConfig.load())
 
 
+def _label_end(data: VrpDataset) -> pd.Series:
+    """The assembler's completion-date sidecar, read straight from disk."""
+    frame = pd.read_csv(data.config.processed_path("label_end"),
+                        parse_dates=["date", "label_end"])
+    return frame.set_index("date")["label_end"]
+
+
 def test_sequences_dates_match_split(default_data):
     _, _, dates = default_data.sequences("test")
     assert list(dates) == list(default_data.split("test").target.index)
@@ -63,9 +70,33 @@ def test_scaler_excludes_val_under_holdout():
     manual = pd.read_csv(held.config.processed_path("train"), parse_dates=["date"])
     manual = manual.set_index("date").sort_index()
     manual = manual.loc[manual.index < "2017-01-01"]
+    #the scaler sees the purged rows: an origin whose label completes inside the
+    #validation window is not training data, so re-derive that here too
+    manual = manual.loc[_label_end(held).reindex(manual.index) < pd.Timestamp("2017-01-01")]
     #per column on its own non-NaN rows
     expected = np.array([manual[c].dropna().mean() for c in cols])
     np.testing.assert_allclose(held_means, expected)
+
+
+def test_holdout_train_excludes_labels_that_reach_into_validation():
+    """The validation boundary needs the same purge the panels got at the split.
+
+    An origin within one horizon of 2017-01-01 carries validation returns inside its
+    own forward label, so training on it leaks the split it is selected against. The
+    assembler cannot do this one: the boundary is drawn at run time.
+    """
+    data = VrpDataset(ExperimentConfig.load(holdout_val=True))
+    train = data.daily("train")
+    completion = _label_end(data).reindex(train.index)
+
+    assert completion.notna().all()
+    assert completion.max() < pd.Timestamp(VrpDataset.VAL_START)
+
+    #exactly one horizon deep, so the purge does not eat clean training rows
+    unpurged = pd.read_csv(data.config.processed_path("train"), parse_dates=["date"])
+    unpurged = unpurged.set_index("date").sort_index()
+    unpurged = unpurged.loc[unpurged.index < VrpDataset.VAL_START]
+    assert len(unpurged) - len(train) == data.config.horizon_days
 
 
 def test_transform_basis_is_invariant_to_feature_set():

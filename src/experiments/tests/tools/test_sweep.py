@@ -59,6 +59,14 @@ def test_window_facade_expands_to_the_child_runner_arguments():
     assert command[command.index("--campaign-id") + 1] == "final_weekly_20260831"
 
 
+def test_validation_sweep_passes_a_real_holdout_and_validation_split():
+    arm = sweep.Arm(encoding="rate", algorithm="eventprop", seed=1, input_window=5)
+    command = sweep.arm_command(arm, "py", "rv_fwd", "vix9d", "weekly", "snn",
+                                holdout_val=True, evaluation_split="val")
+    assert "--holdout-val" in command
+    assert command[command.index("--evaluation-split") + 1] == "val"
+
+
 def test_result_dir_is_recovered_from_run_output():
     stdout = "noise\nresults written to C:\\runs\\20260818-1200_weekly\nmore noise\n"
     assert sweep.result_dir(stdout, "") == "C:\\runs\\20260818-1200_weekly"

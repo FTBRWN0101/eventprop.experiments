@@ -106,11 +106,21 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
     parser.add_argument("--input-window", type=int, default=45)
     parser.add_argument("--seed", type=int, default=1)
     parser.add_argument("--readout-window", action="store_true")
-    parser.add_argument("--readout-window-fraction", type=float, default=0.1)
+    parser.add_argument("--readout-window-fraction", type=float, default=0.2)
     parser.add_argument("--reset-synapses-between-trials", action="store_true")
     parser.add_argument("--holdout-val", action="store_true",
                         help="Carve 2017-2019 out of train, so there is a validation "
                              "column to choose an epoch on rather than choosing on test.")
+    parser.add_argument("--model", default="snn",
+                        help="The run's `model` field, which is inside the checkpoint "
+                             "identity. Sweep arms record 'multiple', not 'snn', so the "
+                             "default only addresses a single-model run.")
+    parser.add_argument("--campaign-id", default=None,
+                        help="Campaign the arm belongs to. It is inside the checkpoint "
+                             "identity, so without it a campaign arm cannot be found.")
+    parser.add_argument("--allow-silent-neurons", action="store_true",
+                        help="Match an arm trained under D123's force-everywhere abort "
+                             "policy. Also inside the checkpoint identity.")
     parser.add_argument("--splits", default="val,test")
     return parser.parse_args(argv)
 
@@ -120,13 +130,15 @@ def main(argv: list[str] | None = None) -> None:
                         datefmt="%H:%M:%S")
     args = _parse_args(argv)
     config = ExperimentConfig.load(
-        model="snn", horizon=args.horizon, target=args.target, iv_leg=args.iv_leg,
+        model=args.model, horizon=args.horizon, target=args.target, iv_leg=args.iv_leg,
         encoding=args.encoding, algorithm=args.algorithm,
         input_window=args.input_window, seed=args.seed,
         readout_window=args.readout_window,
         readout_window_fraction=args.readout_window_fraction,
         reset_synapses_between_trials=args.reset_synapses_between_trials,
-        holdout_val=args.holdout_val)
+        holdout_val=args.holdout_val,
+        campaign_id=args.campaign_id,
+        silent_neuron_abort=not args.allow_silent_neurons)
 
     splits = tuple(s.strip() for s in args.splits.split(",") if s.strip())
     frame = score_epochs(config, splits)

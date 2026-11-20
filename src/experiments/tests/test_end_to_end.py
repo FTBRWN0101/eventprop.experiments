@@ -173,3 +173,50 @@ def test_garch_is_a_benchmark_in_its_own_right(results_root):
     #and the two are the same comparison from opposite sides
     assert np.isclose(metrics.loc["har_rv", "dm_garch_rv_lag0"],
                       -metrics.loc["garch", "dm_har_rv_rv_lag0"])
+
+
+def test_the_validation_split_is_scored_on_validation_dates(results_root):
+    """--evaluation-split val must score 2017-2019, not the 2020 test window.
+
+    garch forecast from the test boundary regardless of the split it was asked for,
+    so every val forecast was NaN and the strict scoring guard killed the whole run.
+    """
+    run_experiment.main(["--models", BOTH_BENCHMARKS, "--target", "rv_fwd",
+                         "--holdout-val", "--evaluation-split", "val"])
+    run_dir = _only_run_dir(results_root)
+
+    config = json.loads((run_dir / "config.json").read_text(encoding="utf8"))
+    assert config["evaluation_split"] == "val"
+    assert config["scored_models"] == BOTH_BENCHMARKS.split(",")
+
+    predictions = pd.read_csv(run_dir / "predictions.csv", parse_dates=["date"])
+    assert predictions["date"].min().year == 2017
+    assert predictions["date"].max().year < 2020
+    metrics = pd.read_csv(run_dir / "metrics.csv", index_col="model")
+    assert metrics.loc["garch", "n"] > 0
+
+
+def test_one_model_failing_does_not_discard_the_others(results_root, monkeypatch):
+    """A broken model leaves the comparison. The run is still written, and still fails."""
+    from models.garch import GarchForecaster
+
+    def explode(self, data):
+        raise RuntimeError("synthetic failure")
+
+    monkeypatch.setattr(GarchForecaster, "fit", explode)
+
+    with pytest.raises(SystemExit):
+        run_experiment.main(["--models", BOTH_BENCHMARKS, "--target", "rv_fwd"])
+
+    run_dir = _only_run_dir(results_root)
+    config = json.loads((run_dir / "config.json").read_text(encoding="utf8"))
+    #requested records the ask, scored records what survived, so the gap is visible
+    assert config["requested_models"] == BOTH_BENCHMARKS.split(",")
+    assert "garch" not in config["scored_models"]
+
+    metrics = pd.read_csv(run_dir / "metrics.csv", index_col="model")
+    assert "garch" not in metrics.index
+    assert {"har_rv", "constant", "persistence"} <= set(metrics.index)
+
+    diagnostics = json.loads((run_dir / "diagnostics.json").read_text(encoding="utf8"))
+    assert "synthetic failure" in diagnostics["__failed__"]["garch"]

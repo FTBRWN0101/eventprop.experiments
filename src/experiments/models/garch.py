@@ -35,8 +35,9 @@ class GarchForecaster(Forecaster):
         #P2-2: the fit is bounded by the end of the TRAIN split, not by the first test
         #date. Under --holdout-val the train split stops in 2016 while the test split
         #still begins in 2020, so keying on the test date fed garch the three
-        #validation years that har_rv and the sequence models lose. Without
-        #--holdout-val no dates sit between the two bounds, so this changes nothing.
+        #validation years that har_rv and the sequence models lose. Since the
+        #split-boundary purge the two bounds differ by one horizon in every arm, so
+        #this is load-bearing even without --holdout-val.
         train_end = data.daily("train").index.max()
         later = returns.index[returns.index > train_end]
         self._last_obs = later.min() if len(later) else self._first_test
@@ -49,8 +50,11 @@ class GarchForecaster(Forecaster):
     def predict(self, data: VrpDataset, split: str) -> pd.Series:
         view = data.split(split)
         horizon = view.horizon_days
+        #forecast from the first date of the split being scored. Keying on the test
+        #boundary returned an all-NaN forecast on the validation split, which begins
+        #years earlier. Identical on the test split, where the two dates coincide.
         forecast = self._result.forecast(
-            horizon=horizon, start=self._first_test, reindex=False)
+            horizon=horizon, start=view.features.index.min(), reindex=False)
         #sum h daily variance forecasts, then annualise
         forward_var = forecast.variance.sum(axis=1)
         rv_fwd_hat = np.sqrt(forward_var * (data.config.annualisation / horizon))

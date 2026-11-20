@@ -27,6 +27,12 @@ class RawSeries:
 #CBOE ships MM/DD/YYYY with OHLC, or one named column
 _CBOE_DATE_FMT = "%m/%d/%Y"
 
+#the equity index defines the trading calendar. CBOE publishes a row on days the US
+#market was shut, so an outer join enters those dates as trading days with no price.
+#log_returns rightly refuses to bridge a missing observation, which would then void
+#the return on the next trading day and every realised-vol window spanning it.
+CALENDAR_SERIES: str = "spx"
+
 #the raw inputs; add a series here
 RAW_SERIES: tuple[RawSeries, ...] = (
     RawSeries("vix", "cboe", "vix_daily.csv", "CLOSE", date_format=_CBOE_DATE_FMT),
@@ -75,6 +81,11 @@ class RawData:
         if not loaded:
             raise FileNotFoundError("no raw series could be loaded from data-save")
         frame = pd.concat(loaded, axis=1).sort_index()
+        calendar = loaded.get(CALENDAR_SERIES)
+        if calendar is not None:
+            #reindex, not dropna: a date the file supplies but leaves blank is a real
+            #gap and must stay, so the no-bridging guard still sees it
+            frame = frame.reindex(calendar.index)
         frame.index.name = "date"
         return cls(frame=frame, series=tuple(used))
 

@@ -661,7 +661,16 @@ class SnnForecaster(Forecaster):
         self._y_mean, self._y_std = float(y.mean()), float(y.std() or 1.0)
         self._encoder.fit(X, scale)
 
-    def predict(self, data: VrpDataset, split: str) -> pd.Series:
+    def predict(self, data: VrpDataset, split: str,
+                inference_seed: int | None = None) -> pd.Series:
+        """Predict one split, optionally fixing an inference-only Poisson draw.
+
+        ``inference_seed`` never affects training or checkpoint identity. It exists so
+        a rate-coded network can be evaluated as a declared Monte Carlo ensemble over
+        input-spike draws, rather than having that noise silently folded into the
+        training seed. Non-rate encoders are deterministic, so repeating their draw is
+        intentionally unnecessary.
+        """
         from ml_genn.compilers import InferenceCompiler
         from ml_genn.serialisers import Numpy
 
@@ -689,10 +698,13 @@ class SnnForecaster(Forecaster):
             encoded, self._timesteps, max_spikes)
         network.load((self._epoch_key(),), Numpy(checkpoint_dir))
 
-        #without a seed PoissonInput redraws every predict()
+        #without a seed PoissonInput redraws every predict(). Keep the historical
+        #training seed as the default, while allowing post-training evaluation to
+        #declare independent draws without changing which checkpoint is loaded.
+        rng_seed = self.config.seed if inference_seed is None else inference_seed
         compiler = InferenceCompiler(evaluate_timesteps=self._timesteps,
                                      batch_size=BATCH_SIZE, dt=DT,
-                                     rng_seed=self.config.seed)
+                                     rng_seed=rng_seed)
         compiled_net = compiler.compile(network)
         with compiled_net:
             y_pred, _ = compiled_net.predict({input_pop: encoded.data}, [output_pop])

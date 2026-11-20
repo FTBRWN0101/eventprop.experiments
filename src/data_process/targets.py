@@ -15,6 +15,8 @@ if TYPE_CHECKING:
 
 #shared forward realised-vol label
 SHARED_TARGET: str = "rv_fwd"
+#date at which the forward label is fully observable; metadata, never a feature/target
+LABEL_COMPLETION: str = "label_end"
 
 
 class TargetBuilder:
@@ -27,7 +29,8 @@ class TargetBuilder:
         """Return ``rv_fwd`` plus ``iv_/vrp_/rvrp_`` columns for each configured leg."""
         #not inference-ready: rows with a NaN rv_fwd get dropped
         rv_fwd = forward_realised_vol(raw["spx"], horizon.days, self.config.annualisation)
-        columns: dict[str, pd.Series] = {SHARED_TARGET: rv_fwd}
+        completion = pd.Series(raw["spx"].index, index=raw["spx"].index).shift(-horizon.days)
+        columns: dict[str, pd.Series] = {SHARED_TARGET: rv_fwd, LABEL_COMPLETION: completion}
 
         window = self.config.rvrp_smooth_window
         for leg in self.config.legs_for(horizon):

@@ -142,6 +142,45 @@ def test_train_ends_before_test_begins(panels, horizon):
 
 
 @pytest.mark.parametrize("horizon", ["weekly", "monthly"])
+def test_training_labels_complete_before_the_test_boundary(spx_prices, panels, horizon):
+    """No training rv_fwd label may use a return on or after the first test date."""
+    train, test = panels.get((horizon, "train")), panels.get((horizon, "test"))
+    if train is None or test is None:
+        pytest.skip(f"no split panels for {horizon}")
+    calendar = spx_prices.dropna().index
+    locations = calendar.get_indexer(train.index)
+    assert (locations >= 0).all()
+    completion = calendar.take(locations + HORIZON_DAYS[horizon])
+    assert completion.max() < test.index.min()
+
+
+@pytest.mark.parametrize("horizon", ["weekly", "monthly"])
+def test_a_market_holiday_does_not_void_the_days_around_it(panels, spx_prices, horizon):
+    """A CBOE row on a closed-market day must not delete its neighbours' windows.
+
+    The holiday is never a forecast origin itself, and the required-feature gate drops
+    it either way, so its own absence proves nothing. The symptom is the neighbours:
+    entering it as a trading day with no price voids every realised-vol window that
+    spans it, which silently cost 563 of the 1508 weekly test rows.
+    """
+    full = panels.get((horizon, "full"))
+    if full is None:
+        pytest.skip(f"no full panel for {horizon}")
+
+    calendar = spx_prices.index
+    #Juneteenth 2022, published by CBOE, not traded by the index
+    holiday = pd.Timestamp("2022-06-20")
+    assert holiday not in calendar
+    if not (full.index.min() < holiday < full.index.max()):
+        pytest.skip("the holiday sits outside the panel span")
+
+    window = HORIZON_DAYS[horizon]
+    position = calendar.searchsorted(holiday)
+    neighbours = calendar[position - window:position + window]
+    assert neighbours.difference(full.index).empty
+
+
+@pytest.mark.parametrize("horizon", ["weekly", "monthly"])
 def test_vrp_columns_reconstruct_from_their_legs(panels, horizon):
     """``vrp_<leg>`` must be exactly ``iv_<leg> - rv_fwd`` on every row."""
     panel = panels.get((horizon, "full"))

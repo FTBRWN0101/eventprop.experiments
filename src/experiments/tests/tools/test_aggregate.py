@@ -51,6 +51,14 @@ def test_grouping_ignores_seed_and_repo_root(tmp_path):
     assert frame["n_seeds"].tolist() == [3]
 
 
+def test_grouping_ignores_the_per_directory_run_identifier(tmp_path):
+    _write_run(tmp_path, "run1", _metrics(r2_rv=0.4), seed=1, run_id="unique-1")
+    _write_run(tmp_path, "run2", _metrics(r2_rv=0.6), seed=2, run_id="unique-2")
+    frame = tool.aggregate(tool.load_runs(tmp_path), min_seeds=1)
+    assert frame["group"].nunique() == 1
+    assert frame["n_seeds"].tolist() == [2]
+
+
 def test_any_other_config_field_starts_a_new_group(tmp_path):
     _write_run(tmp_path, "a", _metrics(r2_rv=0.5), seed=1, learning_rate=0.001)
     _write_run(tmp_path, "b", _metrics(r2_rv=0.5), seed=2, learning_rate=0.01)

@@ -54,6 +54,8 @@ class VrpPipeline:
         self.logger.info("  span:     %s", panel.span)
         self.logger.info("  rows:     %d total (%d train / %d test)",
                          len(panel.full), len(panel.train), len(panel.test))
+        self.logger.info("  purged:   %d train origin(s) whose labels cross the split",
+                         panel.purged_train_rows)
         self.logger.info("  features: %d (%s)", len(panel.feature_columns),
                          ", ".join(panel.feature_columns))
         self.logger.info("  targets:  %s", ", ".join(panel.target_columns))

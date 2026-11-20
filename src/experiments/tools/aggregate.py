@@ -51,8 +51,9 @@ from core.results import RESULTS_ROOT  #noqa: E402
 
 logger = logging.getLogger("aggregate")
 
-#seed is what we aggregate over; repo_root is an absolute path that varies by machine
-IGNORED_FIELDS: tuple[str, ...] = ("seed", "repo_root")
+#seed is what we aggregate over; repo_root moves between machines and run_id is a
+#per-directory UUID allocated by save_run, neither of which changes an experiment arm.
+IGNORED_FIELDS: tuple[str, ...] = ("seed", "repo_root", "run_id")
 
 #the metrics contract: fewer than this many seeds is not a reportable figure
 MIN_SEEDS = 8

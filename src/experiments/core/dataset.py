@@ -13,6 +13,10 @@ from core.config import (EXCLUDED_FEATURES, PRICE_ONLY_FEATURES, SURFACE_FEATURE
 #targets, never inputs
 _TARGET_PREFIXES = ("iv_", "vrp_", "rvrp_", "vvrp_")
 
+#the assembler's sidecar of label completion dates, mirroring
+#data_process.targets.LABEL_COMPLETION. The two packages do not share a namespace
+LABEL_END = "label_end"
+
 #rolling window for the adaptive delta threshold, and the minimum history for one
 SCALE_WINDOW = 20
 SCALE_MIN_PERIODS = 5
@@ -102,10 +106,40 @@ class VrpDataset:
                 frame = frame.loc[frame.index >= self.VAL_START]
             elif split == "train" and cfg.holdout_val:
                 frame = frame.loc[frame.index < self.VAL_START]
+                frame = self._purge_labels_crossing(frame,
+                                                    pd.Timestamp(self.VAL_START))
             if cfg.sample_start is not None:
                 frame = frame.loc[frame.index >= cfg.sample_start]
             self._cache[split] = frame
         return self._cache[split]
+
+    def _purge_labels_crossing(self, frame: pd.DataFrame,
+                               boundary: pd.Timestamp) -> pd.DataFrame:
+        """Drop origins whose forward label only completes on or after *boundary*.
+
+        The assembler applies this at the train/test split when it writes the panels,
+        but the validation boundary is drawn here at run time, so it has to be applied
+        here as well. Without it the last horizon of training rows carries validation
+        returns inside its own label, which is the same defect the written panels were
+        rebuilt to remove.
+
+        Completion dates come from the assembler's sidecar rather than from a panel
+        column, because ``feature_columns`` classifies by name and would hand a
+        future-dated column to every model as an input.
+        """
+        path = self.config.processed_path(LABEL_END)
+        if not path.exists():
+            raise FileNotFoundError(
+                f"{path} is missing, so the validation boundary cannot be purged of "
+                f"labels that reach across it. Rebuild the panels with build_vrp.py.")
+        completion = pd.read_csv(path, parse_dates=["date", LABEL_END])
+        completion = completion.set_index("date")[LABEL_END].reindex(frame.index)
+        if completion.isna().any():
+            missing = completion.index[completion.isna()]
+            raise ValueError(
+                f"{path} has no completion date for {len(missing)} training rows, "
+                f"first {missing[0].date()}. The sidecar is stale; rebuild the panels.")
+        return frame.loc[(completion < boundary).to_numpy()]
 
     def full(self) -> pd.DataFrame:
         return self.daily("full")

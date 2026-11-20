@@ -58,10 +58,19 @@ def fit_predict(config: ExperimentConfig, model_names: list[str]) -> tuple[
     data = VrpDataset(config)
     predictions: dict[str, pd.Series] = {}
     diagnostics: dict[str, dict] = {}
+    failed: dict[str, str] = {}
     for name in model_names:
-        model = MODELS.get(name)(config)
-        model.fit(data)
-        predictions[name] = model.predict(data, "test")
+        try:
+            model = MODELS.get(name)(config)
+            model.fit(data)
+            predictions[name] = model.predict(data, config.evaluation_split)
+        except Exception as error:
+            #one model's failure must not discard every other model's completed work.
+            #The arm still exits non-zero, so the sweep records it as failed rather
+            #than banking a run that is quietly missing a model.
+            logger.exception("[run] %s failed and is dropped from this run", name)
+            failed[name] = f"{type(error).__name__}: {error}"
+            continue
         diag = {}
         for attribute in ("fitted_range", "fit_tolerance_days",
                           "silent_neuron_fraction", "pinned_fraction"):
@@ -69,6 +78,8 @@ def fit_predict(config: ExperimentConfig, model_names: list[str]) -> tuple[
                 diag[attribute] = getattr(model, attribute)
         if diag:
             diagnostics[name] = diag
+    if failed:
+        diagnostics["__failed__"] = failed
     return data, predictions, diagnostics
 
 
@@ -81,15 +92,25 @@ def run(config: ExperimentConfig, model_names: list[str]) -> tuple[
     train = data.split("train")
     train_target_mean = float(train.target.mean())
     train_rv_mean = float(train.rv_fwd.mean())
-    split = data.split("test")
+    split = data.split(config.evaluation_split)
 
     results: dict[str, dict[str, float]] = {}
     errors: dict[str, object] = {}
     errors_rv: dict[str, object] = {}
-    for name, pred in predictions.items():
-        results[name] = metrics.evaluate(split, pred, train_target_mean, train_rv_mean)
-        errors[name] = metrics.squared_errors(split, pred)
-        errors_rv[name] = metrics.squared_errors_rv(split, pred)
+    for name in list(predictions):
+        pred = predictions[name]
+        try:
+            results[name] = metrics.evaluate(split, pred, train_target_mean,
+                                             train_rv_mean)
+            errors[name] = metrics.squared_errors(split, pred)
+            errors_rv[name] = metrics.squared_errors_rv(split, pred)
+        except Exception as error:
+            logger.exception("[run] %s cannot be scored on the %s split",
+                             name, config.evaluation_split)
+            diagnostics.setdefault("__failed__", {})[name] = (
+                f"{type(error).__name__}: {error}")
+            results.pop(name, None)
+            del predictions[name]
 
     #Diebold-Mariano vs the benchmark (positive => benchmark worse), both lags.
     #Neither lag is obviously right under nonoverlap sampling: the test rows are already
@@ -117,7 +138,7 @@ def _winsor_binding(data: VrpDataset, config: ExperimentConfig) -> dict | None:
     """
     if config.target != "rvrp_winsor":
         return None
-    frame = data.daily("test")
+    frame = data.daily(config.evaluation_split)
     raw_column = f"rvrp_{config.iv_leg}"
     if raw_column not in frame.columns:
         return None
@@ -475,6 +496,9 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
     parser.add_argument("--delta-multiplier", type=float, default=1.0)
     parser.add_argument("--holdout-val", action="store_true",
                         help="Hold out 2017-2019 from train as a validation split.")
+    parser.add_argument("--evaluation-split", choices=("val", "test"), default="test",
+                        help="Score validation while selecting; score final test only after "
+                             "a configuration is predeclared.")
     parser.add_argument("--loss-shaping", action="store_true",
                         help="Contribution #6: exponential loss weight, EventProp only.")
     parser.add_argument("--w-in-scale", type=float, default=2.5,
@@ -549,6 +573,7 @@ def main(argv: list[str] | None = None) -> None:
         sample_start=args.sample_start, num_epochs=args.num_epochs,
         learning_rate=args.learning_rate, delta_multiplier=args.delta_multiplier,
         holdout_val=args.holdout_val,
+        evaluation_split=args.evaluation_split,
         loss_shaping=args.loss_shaping, loss_shaping_tau=args.loss_shaping_tau,
         num_hidden=args.num_hidden, checkpoint_epochs=args.checkpoint_epochs,
         lstm_hidden_size=args.lstm_hidden_size,
@@ -571,6 +596,13 @@ def main(argv: list[str] | None = None) -> None:
     run_dir = save_run(config, results, predictions, diagnostics, actual,
                        requested_models=model_names)
     logger.info("\nresults written to %s", run_dir)
+    #the run is written either way, so no work is lost, but an arm missing a model
+    #is not a success: sweep.py keys resume and --retry-failed on the exit code
+    failed = diagnostics.get("__failed__") or {}
+    if failed:
+        logger.error("no result for %s", ", ".join(
+            f"{name} ({reason})" for name, reason in sorted(failed.items())))
+        raise SystemExit(1)
 
 
 if __name__ == "__main__":

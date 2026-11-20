@@ -140,10 +140,24 @@ def evaluate(split: Split, pred: pd.Series,
     r2_rv is the primary metric, gate must be positive to beat the benchmark,
     and dispersion is descriptive only.
     """
+    if pred.index.has_duplicates:
+        raise ValueError("prediction index contains duplicate evaluation dates")
+    expected = split.target.index
+    missing, unexpected = expected.difference(pred.index), pred.index.difference(expected)
+    if len(missing) or len(unexpected):
+        raise ValueError("prediction dates must match the evaluation split exactly; "
+                         f"missing={len(missing)}, unexpected={len(unexpected)}")
+    pred = pred.reindex(expected)
+    if not np.isfinite(pred.to_numpy(dtype=float)).all():
+        raise ValueError("prediction contains non-finite values on the evaluation split")
     rv_pred = split.to_rv_fwd(pred)
+    if not np.isfinite(rv_pred.to_numpy(dtype=float)).all():
+        raise ValueError("prediction implies non-finite forward volatility")
     frame = pd.concat(
         {"real": split.target, "pred": pred,
-         "rv_real": split.rv_fwd, "rv_pred": rv_pred}, axis=1).dropna()
+         "rv_real": split.rv_fwd, "rv_pred": rv_pred}, axis=1)
+    if frame.isna().any().any():
+        raise ValueError("evaluation split contains missing target or forecast values")
     real, pred_a = frame["real"].to_numpy(), frame["pred"].to_numpy()
     rv_real, rv_pred_a = frame["rv_real"].to_numpy(), frame["rv_pred"].to_numpy()
     r2, a, b = mincer_zarnowitz_r2(real, pred_a)

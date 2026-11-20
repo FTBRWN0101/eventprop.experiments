@@ -51,11 +51,26 @@ def test_holdout_actually_moves_the_garch_boundary(fitted):
     assert pd.Timestamp(held["garch"].fitted_range[1]) < pd.Timestamp(VrpDataset.VAL_START)
 
 
-def test_without_the_holdout_the_boundary_is_the_first_test_date(fitted):
-    """The no-op property: no dates sit between the train end and the test start,
-    so every result recorded before this fix stays valid."""
-    _, models = fitted[False]
-    assert models["garch"]._last_obs == models["garch"]._first_test
+def test_without_the_holdout_the_boundary_is_the_purged_train_end(fitted):
+    """garch stops where the train panel stops, which is no longer the test start.
+
+    The split-boundary purge drops every training origin whose forward label would
+    only complete on or after the split, so the last fittable day now sits one
+    horizon before the first test date. Keying on the train end rather than the test
+    date is what carries garch across that gap on har_rv's sample.
+    """
+    data, models = fitted[False]
+    garch = models["garch"]
+    train_end = data.daily("train").index.max()
+    returns = data.full()["spx_logret"].dropna()
+    after_train = returns.index[returns.index > train_end]
+    panel = data.daily("full").index
+    gap = panel[(panel > train_end) & (panel < garch._first_test)]
+
+    assert garch._last_obs == after_train.min()
+    assert garch._last_obs < garch._first_test
+    #one horizon of origins was purged, so exactly that many panel dates sit in the gap
+    assert len(gap) == data.config.horizon_days
 
 
 def test_the_dm_guard_admits_the_pair_once_the_samples_match(fitted):

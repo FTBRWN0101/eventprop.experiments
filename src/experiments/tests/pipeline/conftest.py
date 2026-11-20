@@ -60,3 +60,31 @@ def panels():
     if not frames:
         pytest.skip(f"no processed panels under {PROCESSED}")
     return frames
+
+
+@pytest.fixture
+def data_process_import():
+    """Import ``data_process`` modules under their real names, then restore ``sys.modules``.
+
+    ``assembler`` and ``targets`` import ``core.*`` absolutely, so the package directory
+    has to sit on ``sys.path`` while they load, which would shadow ``experiments/core``
+    for the rest of the session. Undoing the swap on teardown also discards whatever a
+    test registered in the feature-builder registry, since that lives in ``core.registry``.
+    """
+    owned = ("assembler", "targets")
+
+    def ours(name: str) -> bool:
+        return name == "core" or name.startswith("core.") or name in owned
+
+    saved = {name: module for name, module in sys.modules.items() if ours(name)}
+    for name in saved:
+        del sys.modules[name]
+    sys.path.insert(0, str(DATA_PROCESS))
+    try:
+        yield importlib.import_module
+    finally:
+        sys.path.remove(str(DATA_PROCESS))
+        for name in tuple(sys.modules):
+            if ours(name):
+                del sys.modules[name]
+        sys.modules.update(saved)

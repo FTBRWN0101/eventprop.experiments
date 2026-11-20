@@ -10,7 +10,7 @@ import pandas as pd
 from core.base import FeatureBuilder, Horizon
 from core.config import ProcessConfig
 from core.loaders import RawData
-from targets import SHARED_TARGET, TargetBuilder
+from targets import LABEL_COMPLETION, SHARED_TARGET, TargetBuilder
 
 
 @dataclass
@@ -26,6 +26,11 @@ class HorizonPanel:
     paths: dict[str, Path] = field(default_factory=dict)
     #column -> values carried forward that survived into full
     fill_counts: dict[str, int] = field(default_factory=dict)
+    #forecast origins excluded because their forward label reaches the test period
+    purged_train_rows: int = 0
+    #origin -> date its forward label completes, for every row of ``full``. Kept beside
+    #the panel rather than inside it so a later split boundary can be purged too
+    label_end: pd.Series = field(default_factory=pd.Series)
 
     @property
     def span(self) -> str:
@@ -92,7 +97,7 @@ class DatasetAssembler:
         features, required = self.feature_frame(raw)
         features, filled_mask = self.fill_optional_gaps(features, required)
         target = self.targets.build(raw, horizon)
-        target_columns = list(target.columns)
+        target_columns = [column for column in target.columns if column != LABEL_COMPLETION]
 
         panel = features.join(target, how="outer").sort_index()
         #gate on required features only, per-leg targets start later
@@ -103,10 +108,19 @@ class DatasetAssembler:
         if self.config.test_end_ts is not None:
             panel = panel.loc[panel.index <= self.config.test_end_ts]
 
-        panel, winsor_columns = self._winsorise(panel, target_columns)
+        #a forecast origin whose forward label only completes on or after the split
+        #would carry test-period returns into training, so it is dropped from train.
+        #label_end is working metadata and must never reach the written panel: the
+        #experiment loader recognises targets by name and would serve it as a feature.
+        before_split = panel.index < self.config.split_ts
+        label_complete = (panel[LABEL_COMPLETION] < self.config.split_ts).to_numpy()
+        train_index = panel.index[before_split & label_complete]
+        label_end = panel[LABEL_COMPLETION]
+        panel = panel.drop(columns=[LABEL_COMPLETION])
+        panel, winsor_columns = self._winsorise(panel, target_columns, train_index)
 
         target_set = set(target_columns) | set(winsor_columns)
-        train = panel.loc[panel.index < self.config.split_ts]
+        train = panel.loc[train_index]
         test = panel.loc[panel.index >= self.config.split_ts]
         #only the filled cells that survived gating
         surviving = filled_mask.reindex(panel.index).fillna(False)
@@ -116,16 +130,18 @@ class DatasetAssembler:
             feature_columns=[c for c in panel.columns if c not in target_set],
             target_columns=[c for c in panel.columns if c in target_set],
             fill_counts=fill_counts,
+            purged_train_rows=int((panel.index < self.config.split_ts).sum() - len(train)),
+            label_end=label_end,
         )
 
-    def _winsorise(self, panel: pd.DataFrame,
-                   target_columns: list[str]) -> tuple[pd.DataFrame, list[str]]:
+    def _winsorise(self, panel: pd.DataFrame, target_columns: list[str],
+                   train_index: pd.DatetimeIndex) -> tuple[pd.DataFrame, list[str]]:
         """Add a winsorised twin for every ``rvrp_*`` column, clipped at train bounds."""
         lower_q, upper_q = self.config.winsor_quantiles
         panel = panel.copy()
         winsor_columns: list[str] = []
         for column in (c for c in target_columns if c.startswith("rvrp_")):
-            train_vals = panel.loc[panel.index < self.config.split_ts, column].dropna()
+            train_vals = panel.loc[train_index, column].dropna()
             if train_vals.empty:
                 raise ValueError(
                     f"cannot winsorise {column!r}: no non-null training observations "
@@ -145,4 +161,9 @@ class DatasetAssembler:
             path = out_dir / f"{split_name}.csv"
             frame.to_csv(path, index_label="date")
             panel.paths[split_name] = path
+        #the completion dates, as a sidecar rather than a panel column: the experiment
+        #loader classifies columns by name and would serve a future date as a feature
+        path = out_dir / f"{LABEL_COMPLETION}.csv"
+        panel.label_end.rename(LABEL_COMPLETION).to_csv(path, index_label="date")
+        panel.paths[LABEL_COMPLETION] = path
         return panel
