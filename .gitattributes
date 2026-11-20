@@ -1,0 +1,5 @@
+# Store text with LF endings so scripts and tests behave the same on Linux and Windows.
+* text=auto eol=lf
+# Windows batch files need CRLF to run reliably in cmd.exe.
+*.bat text eol=crlf
+*.cmd text eol=crlf

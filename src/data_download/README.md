@@ -10,25 +10,28 @@ the repository [`data-save/`](../../data-save) tree (`data-save/<source>/`).
 
 ## Setup
 
+From the repository root:
+
 ```bash
-pip install -r ../requirements.txt          # repo dependencies
-cp .env.example .env                          # then fill in any credentials you have
+uv sync                                                    # repo dependencies
+cp src/data_download/.env.example src/data_download/.env   # then fill in any credentials you have
 ```
 
 `.env` is git-ignored and read automatically. Real environment variables take
 precedence over `.env`. CBOE and Yahoo (`index_returns`) need **no key**; only WRDS
-requires credentials.
+requires credentials. The WRDS sources also need the `wrds` package, which the lock leaves
+out because it pins pandas below 2.3; install it with `uv pip install wrds`.
 
 ## Running
 
 ```bash
 # Everything (sources lacking credentials are skipped, not failed):
-python src/data_download/fetch_all.py
+uv run python src/data_download/fetch_all.py
 
 # A single source:
-python src/data_download/cboe/fetch_cboe.py
-python src/data_download/index_returns/fetch_index_returns.py
-python src/data_download/wrds_crsp/fetch_wrds_crsp.py
+uv run python src/data_download/cboe/fetch_cboe.py
+uv run python src/data_download/index_returns/fetch_index_returns.py
+uv run python src/data_download/wrds_crsp/fetch_wrds_crsp.py
 ```
 
 Output CSVs appear under `data-save/<source>/`. CBOE files are skipped if already

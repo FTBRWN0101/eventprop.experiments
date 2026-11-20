@@ -1,0 +1,40 @@
+[project]
+name = "eventprop-experiments"
+version = "1.0.0"
+description = "Recurrent spiking neural networks, trained with EventProp and e-prop in mlGeNN, benchmarked against HAR-RV, GARCH and an LSTM on forecasting the S&P 500's weekly realised volatility."
+readme = "README.md"
+authors = [{ name = "Findlay Brown" }]
+requires-python = ">=3.12"
+dependencies = [
+    "arch>=6.0",
+    "numpy>=1.24",
+    "pandas>=2.0",
+    "python-dotenv>=1.0",
+    "requests>=2.31",
+    "scipy>=1.10",
+    "torch>=2.0",
+    "yfinance>=0.2",
+]
+
+# PyGeNN and mlGeNN are not listed: they are built by hand for the GPU env (see README.md).
+# wrds is not listed either: it pins pandas below 2.3, the results ran on pandas 3, and only
+# the WRDS fetchers need it, which ask for it when it is missing.
+# torch comes from PyTorch's CPU index, so installs and CI skip the multi-gigabyte CUDA wheels.
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true
+
+[tool.uv.sources]
+torch = { index = "pytorch-cpu" }
+
+[dependency-groups]
+dev = [
+    "pytest>=9.2.0",
+    "pytest-randomly>=5.1.0",
+    "ruff>=0.17.6",
+]
+
+[tool.ruff.lint]
+# The code is kept as submitted, so the default rules it does not follow are turned off.
+ignore = ["B023", "C401", "C408", "F401", "F541", "I001", "PIE808", "PLR0402", "PLW1510", "RUF007", "RUF012", "RUF046", "RUF059", "RUF100", "SIM114", "TRY004", "UP035", "UP037", "UP046"]
