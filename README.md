@@ -68,7 +68,8 @@ The runs used Windows 11, an NVIDIA RTX A5000 Laptop GPU (16 GB), CUDA 13.3, Vis
 uv run pytest
 ```
 
-Tests that need the data skip until `data-save/` exists.
+Tests that need the data skip until you have downloaded it and built the panels.
+Two tests also need the OptionMetrics surface from WRDS, and skip without it.
 Tests marked `gpu` need the mlGeNN env and skip without it.
 
 Tested on Linux and Windows with Python 3.12.
