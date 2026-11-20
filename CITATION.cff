@@ -1,0 +1,10 @@
+cff-version: 1.2.0
+message: "If you use this software, please cite it as below."
+type: software
+title: "Diagnosing a spiking neural network on a volatility forecasting benchmark"
+abstract: "Recurrent spiking neural networks, trained with EventProp and e-prop in mlGeNN, benchmarked against HAR-RV, GARCH and an LSTM on forecasting the S&P 500's weekly realised volatility."
+authors:
+  - family-names: Brown
+    given-names: Findlay
+license: Apache-2.0
+repository-code: "https://github.com/FTBRWN0101/eventprop.experiments"
