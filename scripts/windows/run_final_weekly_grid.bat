@@ -2,7 +2,6 @@
 REM Final MSc weekly grid: 5 encodings x 2 algorithms x 2 windows x 8 seeds = 160 arms.
 REM Roughly 4 GPU-hours, resumable, one manifest.
 REM
-REM Frozen input provenance: data-snapshots/final-weekly-2026-08-31.md.
 REM Results and the manifest are deliberately new campaign artefacts. Do not point this
 REM at a historic manifest: those runs predate the code and policy fixes in D121-D124.
 REM
