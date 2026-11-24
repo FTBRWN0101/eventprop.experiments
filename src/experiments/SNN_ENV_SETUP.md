@@ -51,10 +51,11 @@ PyGeNN 5.4.0's setuptools MSVC helper can return a duplicate `PATH` and `Path` e
 That loses `MSBuild.exe` during PyGeNN's lookup and makes Visual Studio reject the inherited environment when it starts `cl.exe`.
 
 The editable PyGeNN checkout at `.build-deps/genn/pygenn/genn_model.py` now resolves the installed x64 MSBuild executable explicitly when lookup fails, requests `Release|x64`, and passes the canonical MSVC environment directly to MSBuild.
-The launchers in `scripts/windows/` use a shared sanitized environment helper that forwards the required `Path`, `LIB`, `LIBPATH` and `INCLUDE` values only to the launched process.
+The launchers used for the runs, which are not published, forwarded the required `Path`, `LIB`, `LIBPATH` and `INCLUDE` values only to the launched process.
+An x64 Native Tools Command Prompt for VS provides the same values.
 This is a local compatibility patch, not a CUDA, model, or source-layout change.
 
-Verified by `scripts/windows/run_gradient_check.bat` on 2026-08-27.
+Verified by `src/experiments/tools/gradient_check.py` on 2026-08-27.
 The check compiled every generated arm and passed its numerical EventProp gradient assertions.
 
 Windows error 4551 remains a separate Smart App Control risk for newly generated DLLs.

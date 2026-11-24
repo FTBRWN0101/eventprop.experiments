@@ -27,7 +27,6 @@ Choosing each checkpoint on validation data changed the epoch in 116 of 160 runs
 - `src/experiments/compilers/loss_shaping.py`: loss shaping, extended from classification to regression.
 - `src/experiments/tools/`: sweeps, checkpoint selection, ensembles, aggregation and the EventProp gradient check.
 - `src/experiments/run_experiment.py`: runs one configuration and scores every model on the test split.
-- `scripts/windows/`: launchers for the GPU runs.
 - [REPLICATE.md](REPLICATE.md): the commands that reproduce the final campaign.
 
 ## Run it
@@ -48,16 +47,25 @@ The last fits HAR-RV and GARCH on the weekly task and prints their test metrics.
 ### Train the spiking networks
 
 Training needs an NVIDIA GPU, CUDA, the MSVC build tools and a conda env with PyGeNN and mlGeNN.
-The launchers in `scripts/windows/` set up the Visual Studio build environment, then run a script in that env.
-They point at my machine, so first edit two paths at the top of `scripts/windows/run_in_mlgenn.ps1`:
+[SNN_ENV_SETUP.md](src/experiments/SNN_ENV_SETUP.md) covers building that env.
 
-- `$python`: your env's `python.exe`.
-- `$vcvarsAll`: your Visual Studio install's `vcvarsall.bat`.
+GeNN compiles each network when it runs, so the GPU commands need the Visual Studio build environment.
+Open an **x64 Native Tools Command Prompt for VS**, then run from the repo root:
 
-The `gpu` marker note in `pytest.ini` names the same env path, but only as a comment.
+```bat
+conda activate mlgenn
+set DISTUTILS_USE_SDK=1
+python src\experiments\tools\gradient_check.py
+```
+
+The gradient check compiles a small network and tests EventProp's gradient against a finite difference, so it proves the setup before any long run.
+If `nvcc` cannot find the host compiler, set `CUDAHOSTCXX` to the full path of `cl.exe`.
+GeNN writes its generated code to `*_CODE` folders in the working directory, which git ignores.
 
 Do NOT upgrade NumPy in that env.
 PyGeNN is ABI-locked to the NumPy it was built against.
+
+The `gpu` marker note in `pytest.ini` names my env's path, but only as a comment.
 
 The runs used Windows 11, an NVIDIA RTX A5000 Laptop GPU (16 GB), CUDA 13.3, Visual Studio 2026, Python 3.12, PyGeNN 5.4.0, mlGeNN 2.3.1 and NumPy 2.5.1.
 [REPLICATE.md](REPLICATE.md) gives the command for every run.
